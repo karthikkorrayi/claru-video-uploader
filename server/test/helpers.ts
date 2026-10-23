@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type pg from 'pg';
 import { createApp } from '../src/app.js';
 import { CSRF_HEADER, CSRF_VALUE } from '../src/auth/middleware.js';
@@ -7,6 +10,7 @@ import { hashPassword } from '../src/auth/password.js';
 import { createPool } from '../src/db.js';
 import { createLogger } from '../src/logger.js';
 import { migrate } from '../src/migrate.js';
+import type { UploadSettings } from '../src/uploads/context.js';
 import { insertUser } from '../src/users.js';
 
 export const TEST_SECRET = 't'.repeat(48);
@@ -27,13 +31,44 @@ export async function resetDatabase(db: pg.Pool): Promise<void> {
   await migrate(db);
 }
 
-export async function startApp(db: pg.Pool): Promise<{ server: Server; base: string }> {
+const testDirs: string[] = [];
+
+/** Fresh, empty upload folders. Call removeTestDirs() in afterAll. */
+export function testUploadSettings(overrides: Partial<UploadSettings> = {}): UploadSettings {
+  const root = mkdtempSync(join(tmpdir(), 'cvu-test-'));
+  testDirs.push(root);
+  mkdirSync(join(root, 'tus'));
+  mkdirSync(join(root, 'work'));
+  return {
+    tusDir: join(root, 'tus'),
+    workDir: join(root, 'work'),
+    maxUploadBytes: 64 * 1024 * 1024,
+    diskReserveBytes: 0,
+    abandonAfterHours: 72,
+    ...overrides,
+  };
+}
+
+export function removeTestDirs(): void {
+  for (const d of testDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+}
+
+/** Tests that do not upload share one fixed folder instead of creating a new one each run. */
+function idleUploadSettings(): UploadSettings {
+  const root = join(tmpdir(), 'cvu-test-idle');
+  mkdirSync(join(root, 'tus'), { recursive: true });
+  mkdirSync(join(root, 'work'), { recursive: true });
+  return { tusDir: join(root, 'tus'), workDir: join(root, 'work'), maxUploadBytes: 1024, diskReserveBytes: 0, abandonAfterHours: 72 };
+}
+
+export async function startApp(db: pg.Pool, uploads: UploadSettings = idleUploadSettings()): Promise<{ server: Server; base: string }> {
   const app = createApp({
     pool: db,
     logger: createLogger('silent'),
     sessionSecret: TEST_SECRET,
     sessionHours: 12,
     cookieSecure: false,
+    uploads,
   });
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>((r) => server.once('listening', () => r()));
@@ -74,6 +109,21 @@ export class Client {
 
   get(path: string) {
     return this.request('GET', path);
+  }
+
+  /** A raw tus request (resumable upload protocol), with this client's cookie and the CSRF header. */
+  tus(method: 'POST' | 'HEAD' | 'PATCH' | 'DELETE', path: string, headers: Record<string, string> = {}, body?: Uint8Array) {
+    return fetch(this.base + path, {
+      method,
+      headers: {
+        'tus-resumable': '1.0.0',
+        [CSRF_HEADER]: CSRF_VALUE,
+        ...(this.cookie ? { cookie: this.cookie } : {}),
+        ...(body ? { 'content-type': 'application/offset+octet-stream' } : {}),
+        ...headers,
+      },
+      body,
+    });
   }
   post(path: string, body?: unknown, opts?: { csrf?: boolean }) {
     return this.request('POST', path, body ?? {}, opts);

@@ -11,7 +11,13 @@ export type AuditAction =
   | 'user_enabled'
   | 'password_reset'
   | 'sessions_revoked'
-  | 'admin_created';
+  | 'admin_created'
+  | 'recording_created'
+  | 'upload_received'
+  | 'upload_failed'
+  | 'upload_cancelled'
+  | 'upload_abandoned'
+  | 'recording_removed';
 
 export interface AuditEntry {
   actorUserId?: string | null;

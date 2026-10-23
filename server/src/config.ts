@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import type { UploadSettings } from './uploads/context.js';
 
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -30,6 +31,9 @@ const schema = z
     SESSION_HOURS: z.coerce.number().int().min(1).max(72).default(12),
     COOKIE_SECURE: z.enum(['auto', 'yes', 'no']).default('auto'),
     TRUST_PROXY: z.enum(['no', 'loopback']).default('no'),
+    MAX_UPLOAD_GB: z.coerce.number().positive().max(64).default(8),
+    DISK_RESERVE_GB: z.coerce.number().min(0).default(10),
+    UPLOAD_ABANDON_HOURS: z.coerce.number().int().min(1).max(720).default(72),
   })
   .superRefine((c, ctx) => {
     const host = new URL(c.CLARU_BASE_URL).hostname;
@@ -47,6 +51,18 @@ export type Config = z.infer<typeof schema>;
 /** Secure cookies need HTTPS: on in production, off on http://localhost, unless set explicitly. */
 export function cookieSecure(c: Config): boolean {
   return c.COOKIE_SECURE === 'auto' ? c.NODE_ENV === 'production' : c.COOKIE_SECURE === 'yes';
+}
+
+const GiB = 1024 ** 3;
+
+export function uploadSettings(c: Config): UploadSettings {
+  return {
+    tusDir: c.TUS_DIR,
+    workDir: c.WORK_DIR,
+    maxUploadBytes: Math.round(c.MAX_UPLOAD_GB * GiB),
+    diskReserveBytes: Math.round(c.DISK_RESERVE_GB * GiB),
+    abandonAfterHours: c.UPLOAD_ABANDON_HOURS,
+  };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {

@@ -12,3 +12,5 @@ coverage/
 .DS_Store
 # files a later phase script could not apply because you changed them
 *.new
+# the phase scripts themselves (kept next to the project, not in it)
+/claru-l*.sh

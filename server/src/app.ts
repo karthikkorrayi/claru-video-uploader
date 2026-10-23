@@ -6,6 +6,9 @@ import { csrfGuard, loadSession, requireAdmin, requireAuth, requirePasswordChang
 import { checkDb } from './db.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
+import { recordingRoutes } from './routes/recordings.js';
+import type { UploadSettings } from './uploads/context.js';
+import { createUploadHandler } from './uploads/tus.js';
 
 export interface AppDeps {
   pool: pg.Pool;
@@ -16,6 +19,7 @@ export interface AppDeps {
   /** 'loopback' behind Caddy on the same server (production); 'no' locally. */
   trustProxy?: 'no' | 'loopback';
   startedAt?: number;
+  uploads: UploadSettings;
 }
 
 export function createApp(deps: AppDeps): express.Express {
@@ -59,6 +63,11 @@ export function createApp(deps: AppDeps): express.Express {
   // Everything below needs a signed-in user who has replaced any temporary password.
   app.use('/api', requireAuth, requirePasswordChanged);
   app.use('/api/admin', requireAdmin, adminRoutes(db));
+
+  // Uploads (L2): declare a recording, then send its bytes with tus.
+  const uploadCtx = { db, logger: deps.logger, settings: deps.uploads };
+  app.use('/api/recordings', recordingRoutes(uploadCtx));
+  app.use(createUploadHandler(uploadCtx)); // handles /api/uploads itself (tus needs the unmodified URL)
 
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'not_found' });

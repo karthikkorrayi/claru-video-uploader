@@ -5,13 +5,17 @@ import { AuditPage } from './pages/Audit.js';
 import { ChangePasswordPage } from './pages/ChangePassword.js';
 import { HomePage } from './pages/Home.js';
 import { LoginPage } from './pages/Login.js';
+import { RecordingsPage } from './pages/Recordings.js';
+import { UploadPage } from './pages/Upload.js';
 import { UsersPage } from './pages/Users.js';
 
-type Page = 'home' | 'users' | 'audit' | 'password';
+type Page = 'home' | 'upload' | 'recordings' | 'users' | 'audit' | 'password';
 
 export function App() {
   const [user, setUser] = useState<PublicUser | null | undefined>(undefined);
   const [page, setPage] = useState<Page>('home');
+  const [uploadsDone, setUploadsDone] = useState(0);
+  const countUpload = useCallback(() => setUploadsDone((n) => n + 1), []);
 
   const refresh = useCallback(() => {
     api<{ user: PublicUser }>('GET', '/auth/me')
@@ -36,7 +40,11 @@ export function App() {
     return <ChangePasswordPage user={user} forced onDone={(u) => setUser(u)} onSignOut={signOut} />;
   }
 
-  const nav: Array<[Page, string]> = [['home', 'Home']];
+  const nav: Array<[Page, string]> = [
+    ['home', 'Home'],
+    ['upload', 'Upload'],
+    ['recordings', 'Recordings'],
+  ];
   if (user.role === 'admin') nav.push(['users', 'Users'], ['audit', 'Audit log']);
   nav.push(['password', 'Change password']);
 
@@ -59,7 +67,12 @@ export function App() {
         </button>
       </header>
       <main>
-        {page === 'home' && <HomePage user={user} />}
+        {page === 'home' && <HomePage user={user} onGo={setPage} />}
+        {/* Always mounted, only hidden: uploads keep running while you look at other pages. */}
+        <div hidden={page !== 'upload'}>
+          <UploadPage onUploaded={countUpload} />
+        </div>
+        {page === 'recordings' && <RecordingsPage me={user} refreshKey={uploadsDone} />}
         {page === 'users' && user.role === 'admin' && <UsersPage me={user} />}
         {page === 'audit' && user.role === 'admin' && <AuditPage />}
         {page === 'password' && <ChangePasswordPage user={user} onDone={(u) => { setUser(u); setPage('home'); }} />}

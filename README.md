@@ -31,11 +31,19 @@ unset PW
 
 Open http://127.0.0.1:5173.
 
+## Uploads (L2)
+
+- Upload page → add MP4 files → Upload. Received files land in `WORK_DIR/<recording id>/original.mp4`.
+- Interrupted? Add the same file again; only the missing part is sent.
+- `MAX_UPLOAD_GB`, `DISK_RESERVE_GB` and `UPLOAD_ABANDON_HOURS` in `.env` tune the limits.
+- Partial uploads live in `TUS_DIR`; keep `TUS_DIR` and `WORK_DIR` on the same disk.
+
 ## Rules
 
 - `.env` holds secrets and is never committed. `.env.example` lists every setting.
 - Development talks to the mocks. Real Claru needs `ALLOW_REAL_CLARU=yes` and is used
   only in the controlled test.
 - Each phase is applied by a script and committed as one Git commit.
+- Only the consultant who declared a recording may send its bytes (`server/src/uploads/tus.ts`).
 - Consultants see only their own records: every query for owned data goes through
   `ownerScope()` in `server/src/access.ts`, and the tests try to break it.
