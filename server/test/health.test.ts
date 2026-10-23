@@ -1,30 +1,24 @@
-import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { HealthReport } from '@cvu/shared';
-import { createApp } from '../src/app.js';
-import { createPool } from '../src/db.js';
-import { createLogger } from '../src/logger.js';
+import { resetDatabase, startApp, testPool } from './helpers.js';
 
-const dbUrl = process.env.TEST_DATABASE_URL ?? 'postgresql://localhost:5432/claru_test';
-const pool = createPool(dbUrl);
+const db = testPool();
 let server: Server;
 let base = '';
 
 beforeAll(async () => {
-  const app = createApp({ pool, logger: createLogger('silent') });
-  server = app.listen(0, '127.0.0.1');
-  await new Promise<void>((r) => server.once('listening', () => r()));
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await resetDatabase(db);
+  ({ server, base } = await startApp(db));
 });
 
 afterAll(async () => {
   server.close();
-  await pool.end();
+  await db.end();
 });
 
 describe('GET /api/healthz', () => {
-  it('reports the database as up', async () => {
+  it('reports the database as up, without signing in', async () => {
     const res = await fetch(`${base}/api/healthz`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as HealthReport;
@@ -33,9 +27,16 @@ describe('GET /api/healthz', () => {
     expect(body.db.version).toMatch(/^\d+/);
   });
 
-  it('answers unknown API paths with JSON 404', async () => {
+  it('sends basic security headers', async () => {
+    const res = await fetch(`${base}/api/healthz`);
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    expect(res.headers.get('x-powered-by')).toBeNull();
+  });
+
+  it('hides every other API path behind sign-in', async () => {
     const res = await fetch(`${base}/api/does-not-exist`);
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'not_signed_in' });
   });
 });

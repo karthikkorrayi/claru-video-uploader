@@ -16,8 +16,17 @@ supplier API (contract v2), tracks Claru's review, and backs originals up to One
 ## Daily commands
 
 ```bash
-npm run dev     # server :8080, web :5173, mock Claru :4010, mock Graph :4020
-npm run check   # typecheck + lint + tests
+npm run dev                         # server :8080, web :5173, mock Claru :4010, mock Graph :4020
+npm run check                       # typecheck + lint + tests
+npm run db:migrate -w @cvu/server   # apply database migrations (the server also does this at start)
+```
+
+Create an admin (there is no web page for this, on purpose). The password is read from standard input:
+
+```bash
+read -r -s -p "Admin password: " PW; echo
+printf '%s' "$PW" | npm run -s admin:create -w @cvu/server -- --username kk --display-name "Karthik" --password-stdin
+unset PW
 ```
 
 Open http://127.0.0.1:5173.
@@ -28,3 +37,5 @@ Open http://127.0.0.1:5173.
 - Development talks to the mocks. Real Claru needs `ALLOW_REAL_CLARU=yes` and is used
   only in the controlled test.
 - Each phase is applied by a script and committed as one Git commit.
+- Consultants see only their own records: every query for owned data goes through
+  `ownerScope()` in `server/src/access.ts`, and the tests try to break it.

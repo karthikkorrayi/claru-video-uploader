@@ -27,6 +27,9 @@ const schema = z
     CLARU_CONTRACT_VERSION: z.coerce.number().int().min(1).default(2),
     ALLOW_REAL_CLARU: z.enum(['yes', 'no']).default('no'),
     GRAPH_BASE_URL: z.string().url(),
+    SESSION_HOURS: z.coerce.number().int().min(1).max(72).default(12),
+    COOKIE_SECURE: z.enum(['auto', 'yes', 'no']).default('auto'),
+    TRUST_PROXY: z.enum(['no', 'loopback']).default('no'),
   })
   .superRefine((c, ctx) => {
     const host = new URL(c.CLARU_BASE_URL).hostname;
@@ -40,6 +43,11 @@ const schema = z
   });
 
 export type Config = z.infer<typeof schema>;
+
+/** Secure cookies need HTTPS: on in production, off on http://localhost, unless set explicitly. */
+export function cookieSecure(c: Config): boolean {
+  return c.COOKIE_SECURE === 'auto' ? c.NODE_ENV === 'production' : c.COOKIE_SECURE === 'yes';
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = schema.safeParse(env);

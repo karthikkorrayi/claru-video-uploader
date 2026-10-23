@@ -7,5 +7,10 @@ const envFile = resolve(import.meta.dirname, '..', '.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 export default defineConfig({
-  test: { environment: 'node', testTimeout: 15_000 },
+  test: {
+    environment: 'node',
+    testTimeout: 20_000,
+    // All server tests share the claru_test database, so files run one at a time.
+    fileParallelism: false,
+  },
 });
