@@ -1,0 +1,27 @@
+{
+  "name": "claru-video-uploader",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "workspaces": ["shared", "server", "mocks", "web"],
+  "scripts": {
+    "dev": "concurrently -k -n server,web,claru,graph -c blue,green,magenta,cyan \"npm run dev -w @cvu/server\" \"npm run dev -w @cvu/web\" \"npm run dev:claru -w @cvu/mocks\" \"npm run dev:graph -w @cvu/mocks\"",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "test": "npm run test --workspaces --if-present",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.5",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.17.0",
+    "globals": "^15.14.0",
+    "tsx": "^4.19.2",
+    "typescript": "~5.7.2",
+    "typescript-eslint": "^8.19.1",
+    "vite": "^6.0.7",
+    "vitest": "^3.0.5"
+  }
+}

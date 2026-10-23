@@ -1,0 +1,14 @@
+# dependencies and build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+# secrets — never commit
+.env
+.env.*
+!.env.example
+# local data, logs, OS junk
+*.log
+.DS_Store
+# files a later phase script could not apply because you changed them
+*.new
