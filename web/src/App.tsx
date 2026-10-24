@@ -70,7 +70,7 @@ export function App() {
         {page === 'home' && <HomePage user={user} onGo={setPage} />}
         {/* Always mounted, only hidden: uploads keep running while you look at other pages. */}
         <div hidden={page !== 'upload'}>
-          <UploadPage onUploaded={countUpload} />
+          <UploadPage me={user} onUploaded={countUpload} />
         </div>
         {page === 'recordings' && <RecordingsPage me={user} refreshKey={uploadsDone} />}
         {page === 'users' && user.role === 'admin' && <UsersPage me={user} />}

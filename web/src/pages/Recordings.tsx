@@ -12,6 +12,13 @@ const LABELS: Record<TransferStatus, string> = {
   failed: 'Failed',
 };
 
+/** In transit on the server, but no bytes for 90 s: no browser is sending it (tab closed, page reloaded, network down). */
+function paused(r: RecordingView): boolean {
+  if (r.transferStatus !== 'receiving' && r.transferStatus !== 'waiting') return false;
+  const last = Date.parse(r.lastProgressAt ?? r.createdAt);
+  return Date.now() - last > 90_000;
+}
+
 export function size(bytes: number): string {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
@@ -111,7 +118,7 @@ export function RecordingsPage({ me, refreshKey }: { me: PublicUser; refreshKey:
                   <td className="nowrap">{size(r.sizeBytes)}</td>
                   <td>
                     <span className={r.transferStatus === 'received' ? 'ok' : r.transferStatus === 'failed' ? 'error' : ''}>
-                      {LABELS[r.transferStatus]}
+                      {paused(r) ? 'Paused' : LABELS[r.transferStatus]}
                     </span>
                     {r.transferStatus === 'receiving' && (
                       <>
@@ -119,6 +126,7 @@ export function RecordingsPage({ me, refreshKey }: { me: PublicUser; refreshKey:
                       </>
                     )}
                     {r.failureReason && <div className="small muted">{r.failureReason}</div>}
+                    {paused(r) && <div className="small muted">No data for a while. To continue, add the same file on the Upload page.</div>}
                   </td>
                   <td className="small">
                     {speed(r.averageBytesPerSecond)}

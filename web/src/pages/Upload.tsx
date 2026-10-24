@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Uppy, { type Meta, type UppyFile } from '@uppy/core';
 import Dashboard from '@uppy/dashboard';
 import Tus from '@uppy/tus';
 import '@uppy/core/css/style.min.css';
 import '@uppy/dashboard/css/style.min.css';
-import { fingerprintFromSamples, fingerprintRanges, type RecordingView } from '@cvu/shared';
+import { fingerprintFromSamples, fingerprintRanges, type PublicUser, type RecordingView } from '@cvu/shared';
 import { api, errorText } from '../api.js';
+import { size } from './Recordings.js';
 
 type FileMeta = Meta & { recordingId?: string };
 type Body = Record<string, never>;
@@ -32,18 +33,42 @@ async function fingerprintOf(file: Blob): Promise<string> {
  * which is also the upload's address — so the same file added again later, in
  * any browser, continues from where the server says it stopped.
  */
-export function UploadPage({ onUploaded }: { onUploaded: () => void }) {
+export function UploadPage({ me, onUploaded }: { me: PublicUser; onUploaded: () => void }) {
   const target = useRef<HTMLDivElement>(null);
+  const uppyRef = useRef<Uppy<FileMeta, Body> | null>(null);
   const [problems, setProblems] = useState<Problem[]>([]);
   const [busy, setBusy] = useState(false);
+  const [unfinished, setUnfinished] = useState<RecordingView[]>([]);
   const notify = useRef(onUploaded);
   notify.current = onUploaded;
+
+  /**
+   * Your uploads the server is still waiting for, that this tab is not sending.
+   * A browser cannot reopen a file by itself after a reload or a closed tab,
+   * so these need you to add the same file again.
+   */
+  const loadUnfinished = useCallback(() => {
+    api<{ recordings: RecordingView[] }>('GET', '/recordings')
+      .then((r) => {
+        const inThisTab = new Set(uppyRef.current?.getFiles().map((f) => f.meta.recordingId) ?? []);
+        setUnfinished(
+          r.recordings.filter(
+            (x) =>
+              x.uploadedBy.id === me.id &&
+              (x.transferStatus === 'waiting' || x.transferStatus === 'receiving') &&
+              !inThisTab.has(x.id),
+          ),
+        );
+      })
+      .catch(() => undefined);
+  }, [me.id]);
 
   useEffect(() => {
     const uppy = new Uppy<FileMeta, Body>({
       autoProceed: false,
       restrictions: { allowedFileTypes: ['.mp4', 'video/mp4'] },
     });
+    uppyRef.current = uppy;
 
     uppy.use(Dashboard, {
       target: target.current!,
@@ -79,8 +104,11 @@ export function UploadPage({ onUploaded }: { onUploaded: () => void }) {
             fingerprint,
           });
           uppy.setFileMeta(id, { recordingId: r.recording.id });
-          // HEAD on this address tells tus how much the server already has (nothing → it starts the upload).
-          uppy.setFileState(id, { tus: { uploadUrl: `/api/uploads/${r.recording.id}` } });
+          if (r.resumed && r.recording.transferStatus === 'receiving') {
+            // Interrupted earlier (tab closed, page reloaded, other browser): ask the server
+            // how much it already has and send only the rest.
+            uppy.setFileState(id, { tus: { uploadUrl: `/api/uploads/${r.recording.id}` } });
+          }
           uppy.emit('preprocess-complete', uppy.getFile(id));
         } catch (err) {
           setProblems((p) => [...p, { name: file.name ?? 'file', message: errorText(err) }]);
@@ -90,7 +118,12 @@ export function UploadPage({ onUploaded }: { onUploaded: () => void }) {
     });
 
     uppy.on('upload', () => setBusy(true));
-    uppy.on('complete', () => setBusy(false));
+    uppy.on('complete', () => {
+      setBusy(false);
+      loadUnfinished();
+    });
+    uppy.on('upload-start', () => loadUnfinished());
+    uppy.on('file-removed', () => loadUnfinished());
     uppy.on('upload-success', (file) => {
       notify.current();
       // Clear finished files after a moment so the drop area is ready for the next batch.
@@ -114,12 +147,16 @@ export function UploadPage({ onUploaded }: { onUploaded: () => void }) {
       if (uploading) e.preventDefault();
     };
     window.addEventListener('beforeunload', warn);
+    loadUnfinished();
+    const timer = setInterval(loadUnfinished, 15000);
 
     return () => {
+      clearInterval(timer);
       window.removeEventListener('beforeunload', warn);
+      uppyRef.current = null;
       uppy.destroy();
     };
-  }, []);
+  }, [loadUnfinished]);
 
   return (
     <>
@@ -134,14 +171,29 @@ export function UploadPage({ onUploaded }: { onUploaded: () => void }) {
           <ul>
             <li>Wi-Fi drops or the server restarts: it keeps retrying on its own and continues where it stopped.</li>
             <li>
-              You closed the tab or the laptop: open this page again, add the <strong>same file</strong> and press Upload. Only the
-              missing part is sent.
+              The tab was closed or reloaded: the browser cannot pick the file up again by itself. Open this page, add the{' '}
+              <strong>same file</strong> and press Upload. Only the missing part is sent.
             </li>
             <li>Nothing arrives for 72 hours: the partial upload is deleted and you start again.</li>
           </ul>
         </details>
         {busy && <p className="small notice-inline">Uploading — keep this tab open. You can use the other pages meanwhile.</p>}
       </section>
+
+      {unfinished.length > 0 && (
+        <section className="card notice" role="status">
+          <h2>Unfinished uploads</h2>
+          <p className="small">The server is waiting for the rest of these. Add the same file below and press Upload to continue.</p>
+          <ul className="small">
+            {unfinished.map((r) => (
+              <li key={r.id}>
+                <strong>{r.originalFilename}</strong> — {size(r.receivedBytes)} of {size(r.sizeBytes)} received (
+                {Math.floor((r.receivedBytes / r.sizeBytes) * 100)}%)
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {problems.length > 0 && (
         <section className="card notice" role="alert">
