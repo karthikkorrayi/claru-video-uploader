@@ -1,10 +1,15 @@
+import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { FINGERPRINT_PATTERN, TRANSFER_STATUSES, type RecordingView } from '@cvu/shared';
+import { CONSENT_KEYS, FINGERPRINT_PATTERN, TRANSFER_STATUSES, type ConsentKey, type RecordingView } from '@cvu/shared';
 import { audit } from '../audit.js';
+import { ClaruUnavailableError } from '../claru/project.js';
+import { cancelJobs, enqueue } from '../jobs.js';
 import {
   bytesStillExpected,
+  clipsFor,
+  consentComplete,
   findLiveByFingerprint,
   findRecordingForUser,
   insertRecording,
@@ -26,6 +31,25 @@ const createBody = z.object({
 
 const idParam = z.string().uuid();
 
+const consentSchema = z.object(Object.fromEntries(CONSENT_KEYS.map((k) => [k, z.boolean()])) as Record<ConsentKey, z.ZodBoolean>);
+
+/** claru-integration.md, "What you declare with each clip". collectorId is always the uploader. */
+const declarationBody = z.object({
+  shared: z.object({
+    categoryCode: z.string().trim().min(1).max(64),
+    country: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/),
+    siteId: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+    device: z.string().trim().min(1).max(80),
+    mount: z.string().trim().min(1).max(40),
+  }),
+  items: z
+    .array(z.object({ id: z.string().uuid(), recordedAt: z.string().datetime({ offset: true }), consent: consentSchema }))
+    .min(1)
+    .max(50),
+});
+
+const EARLIEST_RECORDING = Date.parse('2020-01-01T00:00:00Z');
+
 function gib(n: number): string {
   return `${(n / GiB).toFixed(1)} GB`;
 }
@@ -38,7 +62,11 @@ function gib(n: number): string {
 export function recordingRoutes(ctx: UploadContext): Router {
   const { db, settings } = ctx;
   const router = Router();
-  const view = (row: RecordingRow) => toRecordingView(row, settings.tusDir);
+  const views = async (rows: RecordingRow[]): Promise<RecordingView[]> => {
+    const clips = await clipsFor(db, rows.map((r) => r.id));
+    return Promise.all(rows.map((r) => toRecordingView(r, settings.tusDir, clips.get(r.id) ?? [])));
+  };
+  const view = async (row: RecordingRow) => (await views([row]))[0]!;
 
   async function fromParam(req: Request, res: Response): Promise<RecordingRow | null> {
     const id = idParam.safeParse(req.params.id);
@@ -51,8 +79,7 @@ export function recordingRoutes(ctx: UploadContext): Router {
     const status = z.enum(TRANSFER_STATUSES).optional().safeParse(req.query.status || undefined);
     const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
     const rows = await listRecordingsForUser(db, req.auth!.user, { status: status.success ? status.data : undefined, limit });
-    const recordings: RecordingView[] = await Promise.all(rows.map(view));
-    res.json({ recordings });
+    res.json({ recordings: await views(rows) });
   });
 
   router.get('/:id', async (req, res) => {
@@ -137,6 +164,117 @@ export function recordingRoutes(ctx: UploadContext): Router {
     res.status(409).json({ error: 'duplicate_in_progress', message: 'This file is already being uploaded.' });
   });
 
+  /**
+   * The declaration Claru needs for each clip (phase L3). Shared fields are given
+   * once for every recording in the request; the capture time and the four
+   * consents are per recording. Re-declaring replaces the earlier answers
+   * (until delivery starts, from L4). Every recording must be one this user may see.
+   */
+  router.post('/declaration', async (req, res) => {
+    const user = req.auth!.user;
+    const body = declarationBody.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({
+        error: 'invalid_input',
+        message: 'Check the fields: country is two letters (IN), site id is letters, digits, dot, dash or underscore, and every recording needs a capture date and time.',
+      });
+      return;
+    }
+    const { shared, items } = body.data;
+    if (new Set(items.map((i) => i.id)).size !== items.length) {
+      res.status(400).json({ error: 'invalid_input', message: 'A recording appears twice.' });
+      return;
+    }
+    const rows: RecordingRow[] = [];
+    for (const item of items) {
+      const row = await findRecordingForUser(db, user, item.id);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (row.transfer_status !== 'received') {
+        res.status(409).json({ error: 'wrong_state', message: `${row.original_filename} has not finished uploading.` });
+        return;
+      }
+      const at = Date.parse(item.recordedAt);
+      if (at > Date.now() + 10 * 60_000 || at < EARLIEST_RECORDING) {
+        res.status(400).json({ error: 'invalid_input', message: `${row.original_filename}: the capture time must be a real past date.` });
+        return;
+      }
+      if (!consentComplete(item.consent)) {
+        res.status(400).json({
+          error: 'consent_incomplete',
+          message: `${row.original_filename}: all four consent statements must be true. Do not deliver footage you cannot affirm them for.`,
+        });
+        return;
+      }
+      rows.push(row);
+    }
+
+    let categories: string[];
+    try {
+      categories = (await ctx.claruProject()).categories.map((c) => c.code);
+    } catch (err) {
+      if (!(err instanceof ClaruUnavailableError)) throw err;
+      res.status(503).json({ error: 'claru_unavailable', message: `${err.message} The category cannot be checked, so nothing was saved.` });
+      return;
+    }
+    if (categories.length > 0 && !categories.includes(shared.categoryCode)) {
+      res.status(400).json({ error: 'unknown_category', message: `Category ${shared.categoryCode} is not in Claru's list for this project.` });
+      return;
+    }
+
+    const day = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+    const batchRef = `cvu-b-${day}-${randomBytes(3).toString('hex')}`;
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      for (const item of items) {
+        await client.query(
+          `UPDATE recordings SET category_code = $2, country = $3, site_id = $4, device = $5, mount = $6,
+                  recorded_at = $7, consent = $8::jsonb, batch_ref = $9, declared_at = now(), declared_by = $10, updated_at = now()
+            WHERE id = $1`,
+          [item.id, shared.categoryCode, shared.country, shared.siteId, shared.device, shared.mount, item.recordedAt,
+            JSON.stringify(item.consent), batchRef, user.id],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+    for (const row of rows) {
+      await audit(db, {
+        action: 'recording_declared',
+        actorUserId: user.id,
+        targetType: 'recording',
+        targetId: row.id,
+        ip: req.ip,
+        details: { filename: row.original_filename, batchRef, categoryCode: shared.categoryCode, siteId: shared.siteId },
+      });
+    }
+    const fresh = await Promise.all(rows.map((r) => findRecordingForUser(db, user, r.id)));
+    res.json({ batchRef, recordings: await views(fresh.filter((r): r is RecordingRow => !!r)) });
+  });
+
+  /** Runs the checks (and cutting) again, e.g. after a failure that was not about the file. Owner or admin. */
+  router.post('/:id/recheck', async (req, res) => {
+    const row = await fromParam(req, res);
+    if (!row) return;
+    if (row.transfer_status !== 'received' || row.check_status === 'pending' || row.check_status === 'running') {
+      res.status(409).json({ error: 'wrong_state', message: 'Only a received recording that is not being checked right now can be checked again.' });
+      return;
+    }
+    await db.query(
+      `UPDATE recordings SET check_status = 'pending', split_status = NULL, split_error = NULL, updated_at = now() WHERE id = $1`,
+      [row.id],
+    );
+    await enqueue(db, 'check', row.id);
+    res.json({ ok: true });
+  });
+
   /** Stops an upload in transit and deletes what has arrived so far. Owner or admin. */
   router.post('/:id/cancel', async (req, res) => {
     const row = await fromParam(req, res);
@@ -178,6 +316,8 @@ export function recordingRoutes(ctx: UploadContext): Router {
       res.status(409).json({ error: 'wrong_state', message: 'Only a received recording can be removed.' });
       return;
     }
+    await cancelJobs(db, row.id);
+    await db.query('DELETE FROM clips WHERE recording_id = $1', [row.id]);
     await removeRecordingDir(settings.workDir, row.id);
     await audit(db, {
       action: 'recording_removed',

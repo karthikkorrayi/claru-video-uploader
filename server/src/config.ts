@@ -34,8 +34,17 @@ const schema = z
     MAX_UPLOAD_GB: z.coerce.number().positive().max(64).default(8),
     DISK_RESERVE_GB: z.coerce.number().min(0).default(10),
     UPLOAD_ABANDON_HOURS: z.coerce.number().int().min(1).max(720).default(72),
+    CLARU_PROJECT_ID: z.string().uuid().default('92070f8b-acfb-44c2-8e73-1e6d9918a2b6'),
+    CLIP_MIN_SECONDS: z.coerce.number().int().min(30).default(300),
+    CLIP_MAX_SECONDS: z.coerce.number().int().min(60).default(1800),
+    CAPTURE_ASPECT: z.enum(['4_3', '16_9']).default('4_3'),
+    FFMPEG_PATH: z.string().min(1).default('ffmpeg'),
+    FFPROBE_PATH: z.string().min(1).default('ffprobe'),
   })
   .superRefine((c, ctx) => {
+    if (c.CLIP_MIN_SECONDS * 2 > c.CLIP_MAX_SECONDS) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['CLIP_MAX_SECONDS'], message: 'must be at least twice CLIP_MIN_SECONDS' });
+    }
     const host = new URL(c.CLARU_BASE_URL).hostname;
     if (host === REAL_CLARU_HOST && c.NODE_ENV !== 'production' && c.ALLOW_REAL_CLARU !== 'yes') {
       ctx.addIssue({
@@ -62,6 +71,8 @@ export function uploadSettings(c: Config): UploadSettings {
     maxUploadBytes: Math.round(c.MAX_UPLOAD_GB * GiB),
     diskReserveBytes: Math.round(c.DISK_RESERVE_GB * GiB),
     abandonAfterHours: c.UPLOAD_ABANDON_HOURS,
+    tools: { ffmpeg: c.FFMPEG_PATH, ffprobe: c.FFPROBE_PATH },
+    clipRules: { minSeconds: c.CLIP_MIN_SECONDS, maxSeconds: c.CLIP_MAX_SECONDS, aspect: c.CAPTURE_ASPECT },
   };
 }
 

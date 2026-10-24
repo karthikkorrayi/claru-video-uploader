@@ -6,7 +6,9 @@ import { csrfGuard, loadSession, requireAdmin, requireAuth, requirePasswordChang
 import { checkDb } from './db.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
+import { claruRoutes } from './routes/claru.js';
 import { recordingRoutes } from './routes/recordings.js';
+import type { ClaruProjectView } from '@cvu/shared';
 import type { UploadSettings } from './uploads/context.js';
 import { createUploadHandler } from './uploads/tus.js';
 
@@ -20,6 +22,8 @@ export interface AppDeps {
   trustProxy?: 'no' | 'loopback';
   startedAt?: number;
   uploads: UploadSettings;
+  /** Claru's project, cached (see claru/project.ts). */
+  claruProject: () => Promise<ClaruProjectView>;
 }
 
 export function createApp(deps: AppDeps): express.Express {
@@ -65,8 +69,9 @@ export function createApp(deps: AppDeps): express.Express {
   app.use('/api/admin', requireAdmin, adminRoutes(db));
 
   // Uploads (L2): declare a recording, then send its bytes with tus.
-  const uploadCtx = { db, logger: deps.logger, settings: deps.uploads };
+  const uploadCtx = { db, logger: deps.logger, settings: deps.uploads, claruProject: deps.claruProject };
   app.use('/api/recordings', recordingRoutes(uploadCtx));
+  app.use('/api/claru', claruRoutes(uploadCtx));
   app.use(createUploadHandler(uploadCtx)); // handles /api/uploads itself (tus needs the unmodified URL)
 
   app.use('/api', (_req, res) => {

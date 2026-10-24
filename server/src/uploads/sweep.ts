@@ -16,7 +16,7 @@ export interface SweepReport {
  *     partial file is deleted and the consultant can start again.
  * This is only about uploads in transit; received recordings are never touched here.
  */
-export async function sweepUploads(ctx: UploadContext, now = new Date()): Promise<SweepReport> {
+export async function sweepUploads(ctx: Pick<UploadContext, 'db' | 'logger' | 'settings'>, now = new Date()): Promise<SweepReport> {
   const { db, settings, logger } = ctx;
   const report: SweepReport = { completed: 0, abandoned: 0 };
 
@@ -54,7 +54,7 @@ export async function sweepUploads(ctx: UploadContext, now = new Date()): Promis
 }
 
 /** Runs the sweep now and every `everyMs`. Returns a function that stops it. */
-export function startUploadSweeper(ctx: UploadContext, everyMs = 5 * 60_000): () => void {
+export function startUploadSweeper(ctx: Pick<UploadContext, 'db' | 'logger' | 'settings'>, everyMs = 5 * 60_000): () => void {
   let running = false;
   const run = async () => {
     if (running) return;

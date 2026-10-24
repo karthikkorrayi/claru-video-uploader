@@ -83,7 +83,10 @@ export type ApiErrorCode =
   | 'insufficient_storage'
   | 'duplicate_in_progress'
   | 'already_uploaded'
-  | 'wrong_state';
+  | 'wrong_state'
+  | 'consent_incomplete'
+  | 'unknown_category'
+  | 'claru_unavailable';
 
 /** Where the original file is in its journey from the browser to the server (phase L2). */
 export const TRANSFER_STATUSES = ['waiting', 'receiving', 'received', 'abandoned', 'cancelled', 'removed', 'failed'] as const;
@@ -106,7 +109,97 @@ export interface RecordingView {
   receivedAt: string | null;
   /** Bytes per second from first to last byte, pauses included; null until received. */
   averageBytesPerSecond: number | null;
+  /** Phase L3: media checks on the received original. Null before the file is received. */
+  checkStatus: CheckStatus | null;
+  problems: CheckProblem[];
+  media: MediaSummary | null;
+  /** Phase L3: cutting into clips Claru accepts. Null until checks pass. */
+  splitStatus: SplitStatus | null;
+  splitError: string | null;
+  clips: ClipView[];
+  declaration: DeclarationView | null;
+  /** Checks passed, clips cut, declaration complete: phase L4 may deliver it. */
+  readyForDelivery: boolean;
 }
+
+export const CHECK_STATUSES = ['pending', 'running', 'passed', 'warned', 'failed'] as const;
+export type CheckStatus = (typeof CHECK_STATUSES)[number];
+export type SplitStatus = 'pending' | 'running' | 'done' | 'failed';
+
+/**
+ * One finding about a recording. `error` stops delivery (Claru would refuse
+ * it at seal); `warn` is delivered and shown to Claru's reviewer; `info` is a note.
+ * Codes match Claru's refusal codes where the check is the same.
+ */
+export interface CheckProblem {
+  code: string;
+  level: 'error' | 'warn' | 'info';
+  message: string;
+}
+
+export interface MediaSummary {
+  durationSeconds: number;
+  width: number;
+  height: number;
+  fps: number;
+  videoCodec: string;
+  hasAudio: boolean;
+  hasTelemetry: boolean;
+  maxKeyframeGapSeconds: number;
+}
+
+export interface ClipView {
+  seq: number;
+  startSeconds: number;
+  durationSeconds: number;
+  sizeBytes: number;
+  externalRef: string;
+}
+
+export interface ConsentAnswers {
+  worker_consent_obtained: boolean;
+  site_or_employer_permission_obtained: boolean;
+  required_consent_or_notice_process_followed: boolean;
+  footage_unedited: boolean;
+}
+
+/** Shared fields, filled once for a batch of recordings. */
+export interface SharedDeclaration {
+  categoryCode: string;
+  country: string;
+  siteId: string;
+  device: string;
+  mount: string;
+}
+
+export interface DeclarationView extends SharedDeclaration {
+  recordedAt: string;
+  consent: ConsentAnswers;
+  batchRef: string | null;
+  declaredAt: string;
+  declaredBy: string;
+}
+
+/** What the declaration form needs from Claru's project (GET /supplier/projects). */
+export interface ClaruProjectView {
+  id: string;
+  name: string;
+  captureAspectRatio: string;
+  clipLength: { minSeconds: number; maxSeconds: number };
+  categories: Array<{ code: string; name: string; parent: string | null }>;
+}
+
+/**
+ * A plain-language line shown under each consent key. The key names themselves are
+ * the wording Claru relies on (claru-integration.md, "The consent block"), so the
+ * form always shows the key name verbatim too.
+ */
+export const CONSENT_TEXT: Record<ConsentKey, string> = {
+  worker_consent_obtained: 'Every worker filmed gave consent.',
+  site_or_employer_permission_obtained: 'The site or employer gave permission to film.',
+  required_consent_or_notice_process_followed: 'The required consent or notice process was followed.',
+  footage_unedited: 'The footage is unedited: one continuous recording, nothing joined or trimmed out.',
+};
 
 /**
  * A quick identity for a large file: SHA-256 over its size plus its first and

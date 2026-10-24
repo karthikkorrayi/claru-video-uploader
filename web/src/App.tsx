@@ -3,19 +3,25 @@ import type { PublicUser } from '@cvu/shared';
 import { api, ApiError } from './api.js';
 import { AuditPage } from './pages/Audit.js';
 import { ChangePasswordPage } from './pages/ChangePassword.js';
+import { DeclarePage } from './pages/Declare.js';
 import { HomePage } from './pages/Home.js';
 import { LoginPage } from './pages/Login.js';
 import { RecordingsPage } from './pages/Recordings.js';
 import { UploadPage } from './pages/Upload.js';
 import { UsersPage } from './pages/Users.js';
 
-type Page = 'home' | 'upload' | 'recordings' | 'users' | 'audit' | 'password';
+type Page = 'home' | 'upload' | 'recordings' | 'declare' | 'users' | 'audit' | 'password';
 
 export function App() {
   const [user, setUser] = useState<PublicUser | null | undefined>(undefined);
   const [page, setPage] = useState<Page>('home');
   const [uploadsDone, setUploadsDone] = useState(0);
   const countUpload = useCallback(() => setUploadsDone((n) => n + 1), []);
+  const [declareIds, setDeclareIds] = useState<string[]>([]);
+  const declare = useCallback((ids: string[]) => {
+    setDeclareIds(ids);
+    setPage('declare');
+  }, []);
 
   const refresh = useCallback(() => {
     api<{ user: PublicUser }>('GET', '/auth/me')
@@ -44,6 +50,7 @@ export function App() {
     ['home', 'Home'],
     ['upload', 'Upload'],
     ['recordings', 'Recordings'],
+    ['declare', 'Declare'],
   ];
   if (user.role === 'admin') nav.push(['users', 'Users'], ['audit', 'Audit log']);
   nav.push(['password', 'Change password']);
@@ -72,7 +79,8 @@ export function App() {
         <div hidden={page !== 'upload'}>
           <UploadPage me={user} onUploaded={countUpload} />
         </div>
-        {page === 'recordings' && <RecordingsPage me={user} refreshKey={uploadsDone} />}
+        {page === 'recordings' && <RecordingsPage me={user} refreshKey={uploadsDone} onDeclare={declare} />}
+        {page === 'declare' && <DeclarePage initialIds={declareIds} onDone={() => setPage('recordings')} />}
         {page === 'users' && user.role === 'admin' && <UsersPage me={user} />}
         {page === 'audit' && user.role === 'admin' && <AuditPage />}
         {page === 'password' && <ChangePasswordPage user={user} onDone={(u) => { setUser(u); setPage('home'); }} />}

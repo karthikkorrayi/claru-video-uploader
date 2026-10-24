@@ -27,6 +27,12 @@ describe('configuration', () => {
     expect(loadConfig({ ...real, ALLOW_REAL_CLARU: 'yes' }).CLARU_BASE_URL).toContain('app.claru.ai');
   });
 
+  it('uses Claru\'s clip rules by default and refuses rules that cannot be split evenly', () => {
+    const c = loadConfig(valid);
+    expect([c.CLIP_MIN_SECONDS, c.CLIP_MAX_SECONDS, c.CAPTURE_ASPECT]).toEqual([300, 1800, '4_3']);
+    expect(() => loadConfig({ ...valid, CLIP_MIN_SECONDS: '1000', CLIP_MAX_SECONDS: '1800' })).toThrow(/CLIP_MAX_SECONDS/);
+  });
+
   it('never exposes secrets when logged', () => {
     const text = JSON.stringify(describeConfig(loadConfig(valid)));
     expect(text).not.toContain('secret@');

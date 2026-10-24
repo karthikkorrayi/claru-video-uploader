@@ -10,6 +10,9 @@ import { hashPassword } from '../src/auth/password.js';
 import { createPool } from '../src/db.js';
 import { createLogger } from '../src/logger.js';
 import { migrate } from '../src/migrate.js';
+import { fingerprintFromSamples, fingerprintRanges, type ClaruProjectView } from '@cvu/shared';
+import { createJobRunner } from '../src/jobs.js';
+import { jobHandlers, onJobGiveUp } from '../src/processing.js';
 import type { UploadSettings } from '../src/uploads/context.js';
 import { insertUser } from '../src/users.js';
 
@@ -45,6 +48,9 @@ export function testUploadSettings(overrides: Partial<UploadSettings> = {}): Upl
     maxUploadBytes: 64 * 1024 * 1024,
     diskReserveBytes: 0,
     abandonAfterHours: 72,
+    tools: { ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' },
+    // Short clips so the test videos stay small; the real values are 300–1800 s.
+    clipRules: { minSeconds: 10, maxSeconds: 30, aspect: '4_3' },
     ...overrides,
   };
 }
@@ -58,10 +64,34 @@ function idleUploadSettings(): UploadSettings {
   const root = join(tmpdir(), 'cvu-test-idle');
   mkdirSync(join(root, 'tus'), { recursive: true });
   mkdirSync(join(root, 'work'), { recursive: true });
-  return { tusDir: join(root, 'tus'), workDir: join(root, 'work'), maxUploadBytes: 1024, diskReserveBytes: 0, abandonAfterHours: 72 };
+  return {
+    tusDir: join(root, 'tus'),
+    workDir: join(root, 'work'),
+    maxUploadBytes: 1024,
+    diskReserveBytes: 0,
+    abandonAfterHours: 72,
+    tools: { ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' },
+    clipRules: { minSeconds: 300, maxSeconds: 1800, aspect: '4_3' },
+  };
 }
 
-export async function startApp(db: pg.Pool, uploads: UploadSettings = idleUploadSettings()): Promise<{ server: Server; base: string }> {
+/** A stand-in for Claru's project discovery (the real call is tested against the mock in claru.test.ts). */
+export const TEST_PROJECT: ClaruProjectView = {
+  id: '92070f8b-acfb-44c2-8e73-1e6d9918a2b6',
+  name: 'Test project',
+  captureAspectRatio: '4_3',
+  clipLength: { minSeconds: 300, maxSeconds: 1800 },
+  categories: [
+    { code: 'MOCK-KITCHEN-PREP', name: 'Food preparation', parent: 'Kitchen' },
+    { code: 'MOCK-WAREHOUSE-PICK', name: 'Picking', parent: 'Warehouse' },
+  ],
+};
+
+export async function startApp(
+  db: pg.Pool,
+  uploads: UploadSettings = idleUploadSettings(),
+  claruProject: () => Promise<ClaruProjectView> = async () => TEST_PROJECT,
+): Promise<{ server: Server; base: string }> {
   const app = createApp({
     pool: db,
     logger: createLogger('silent'),
@@ -69,6 +99,7 @@ export async function startApp(db: pg.Pool, uploads: UploadSettings = idleUpload
     sessionHours: 12,
     cookieSecure: false,
     uploads,
+    claruProject,
   });
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>((r) => server.once('listening', () => r()));
@@ -131,4 +162,28 @@ export class Client {
   async login(username: string, password: string) {
     return this.post('/api/auth/login', { username, password });
   }
+}
+
+/** Runs every queued background job (checks, cutting) now, as the server's worker would. */
+export async function runJobs(db: pg.Pool, settings: UploadSettings): Promise<number> {
+  const core = { db, logger: createLogger('silent'), settings };
+  return createJobRunner({ db, logger: core.logger, handlers: jobHandlers(core), onGiveUp: onJobGiveUp(core) }).drain();
+}
+
+/** Declares and uploads a whole file the way the browser does (tus, 4 MiB pieces). Returns the recording id. */
+export async function uploadFile(c: Client, file: Buffer, filename: string): Promise<string> {
+  const { head, tail } = fingerprintRanges(file.length);
+  const fingerprint = await fingerprintFromSamples(file.length, file.subarray(...head), file.subarray(...tail));
+  const d = await c.post('/api/recordings', { filename, sizeBytes: file.length, fingerprint });
+  if (d.status !== 201 && d.status !== 200) throw new Error(`declare failed: ${d.status} ${JSON.stringify(d.body)}`);
+  const id = d.body.recording.id as string;
+  const meta = `recordingId ${Buffer.from(id).toString('base64')}`;
+  const created = await c.tus('POST', '/api/uploads', { 'upload-length': String(file.length), 'upload-metadata': meta });
+  if (created.status !== 201) throw new Error(`tus create failed: ${created.status}`);
+  const piece = 4 * 1024 * 1024;
+  for (let off = 0; off < file.length; off += piece) {
+    const r = await c.tus('PATCH', `/api/uploads/${id}`, { 'upload-offset': String(off) }, file.subarray(off, Math.min(off + piece, file.length)));
+    if (r.status !== 204) throw new Error(`tus patch failed: ${r.status} ${await r.text()}`);
+  }
+  return id;
 }

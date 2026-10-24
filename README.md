@@ -38,6 +38,13 @@ Open http://127.0.0.1:5173.
 - `MAX_UPLOAD_GB`, `DISK_RESERVE_GB` and `UPLOAD_ABANDON_HOURS` in `.env` tune the limits.
 - Partial uploads live in `TUS_DIR`; keep `TUS_DIR` and `WORK_DIR` on the same disk.
 
+## Checks, clips, declaration (L3)
+
+- After an upload the server checks the file the way Claru will and cuts it into clips
+  (`WORK_DIR/<id>/clips/`). Needs `ffmpeg` / `ffprobe` (Homebrew).
+- Recordings page → Declare: shared fields once, then capture time and the four consents per recording.
+- Clip rules come from `.env` (`CLIP_MIN_SECONDS`, `CLIP_MAX_SECONDS`, `CAPTURE_ASPECT`) and must match Claru's.
+
 ## Rules
 
 - `.env` holds secrets and is never committed. `.env.example` lists every setting.

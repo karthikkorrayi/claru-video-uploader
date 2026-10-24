@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises';
 import { audit } from '../audit.js';
+import { enqueue } from '../jobs.js';
 import { findRecordingById } from '../recordings.js';
 import type { UploadContext } from './context.js';
 import { fingerprintOfFile, moveToWorkDir, originalPath, removeTusFiles, tusFilePath } from './storage.js';
@@ -15,7 +16,7 @@ export const MISMATCH_REASON =
  * tus finish hook and, as a safety net, by the sweep for uploads whose last
  * byte arrived while the server was stopping.
  */
-export async function completeUpload(ctx: UploadContext, id: string): Promise<CompleteResult> {
+export async function completeUpload(ctx: Pick<UploadContext, 'db' | 'logger' | 'settings'>, id: string): Promise<CompleteResult> {
   const { db, settings } = ctx;
   const rec = await findRecordingById(db, id);
   if (!rec || rec.transfer_status !== 'receiving') return 'not_receiving';
@@ -41,12 +42,13 @@ export async function completeUpload(ctx: UploadContext, id: string): Promise<Co
   const done = await db.query<{ seconds: number | null }>(
     `UPDATE recordings
         SET transfer_status = 'received', received_bytes = size_bytes, storage_path = $2,
-            received_at = now(), last_progress_at = now(), updated_at = now()
+            received_at = now(), last_progress_at = now(), check_status = 'pending', updated_at = now()
       WHERE id = $1 AND transfer_status = 'receiving'
       RETURNING extract(epoch FROM received_at - transfer_started_at)::float AS seconds`,
     [id, originalPath(settings.workDir, id)],
   );
   if (!done.rowCount) return 'not_receiving';
+  await enqueue(db, 'check', id); // phase L3: checks, then cutting into clips
   await audit(db, {
     action: 'upload_received',
     actorUserId: rec.uploaded_by,
@@ -58,7 +60,7 @@ export async function completeUpload(ctx: UploadContext, id: string): Promise<Co
   return 'received';
 }
 
-export async function markFailed(ctx: UploadContext, id: string, reason: string): Promise<void> {
+export async function markFailed(ctx: Pick<UploadContext, 'db' | 'logger' | 'settings'>, id: string, reason: string): Promise<void> {
   const r = await ctx.db.query<{ uploaded_by: string; original_filename: string }>(
     `UPDATE recordings SET transfer_status = 'failed', failure_reason = $2, ended_at = now(), updated_at = now()
       WHERE id = $1 AND transfer_status IN ('waiting', 'receiving')
