@@ -78,3 +78,6 @@ fieldset.consents { border: 1px solid var(--line); border-radius: 8px; padding: 
 button.link.danger { color: var(--bad); }
 @media (max-width: 700px) { table { display: block; overflow-x: auto; } }
 .grid2 input, .grid2 select { width: 100%; min-width: 0; }
+.env-banner { background: #b45309; color: #fff; text-align: center; font-size: 0.85rem; padding: 4px 8px; font-weight: 600; }
+tr.clickable { cursor: pointer; }
+pre.detail-json { white-space: pre-wrap; word-break: break-word; background: var(--bg); padding: 6px; border-radius: 6px; margin: 6px 0 0; }

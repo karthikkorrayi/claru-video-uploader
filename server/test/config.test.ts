@@ -25,6 +25,8 @@ describe('configuration', () => {
     const real = { ...valid, CLARU_BASE_URL: 'https://app.claru.ai/api/v1' };
     expect(() => loadConfig(real)).toThrow(/ALLOW_REAL_CLARU/);
     expect(loadConfig({ ...real, ALLOW_REAL_CLARU: 'yes' }).CLARU_BASE_URL).toContain('app.claru.ai');
+    // Production mode is not permission: a test server also runs NODE_ENV=production.
+    expect(() => loadConfig({ ...real, NODE_ENV: 'production' })).toThrow(/ALLOW_REAL_CLARU/);
   });
 
   it('uses Claru\'s clip rules by default and refuses rules that cannot be split evenly', () => {

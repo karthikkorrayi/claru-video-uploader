@@ -50,6 +50,7 @@ const app = createApp({
   trustProxy: config.TRUST_PROXY,
   uploads: settings,
   claruProject: claru.get,
+  environment: config.ENVIRONMENT_LABEL,
 });
 
 const core = { db: pool, logger, settings };

@@ -1,0 +1,35 @@
+# Caddy: HTTPS (automatic Let's Encrypt certificate) in front of the app.
+# __HOST__ is filled in by bootstrap.sh, e.g. 139-59-1-2.sslip.io
+# Access logs: Caddy redacts Cookie, Set-Cookie and Authorization headers by default.
+# Do not turn on the "log_credentials" server option.
+
+__HOST__ {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=86400"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	# The API, including resumable uploads: streamed through, not buffered.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# The web app: built files of the current release; unknown paths get the app.
+	handle {
+		root * /opt/claru/current/web/dist
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output file /var/log/caddy/claru-access.log {
+			roll_size 50MiB
+			roll_keep 5
+		}
+		format json
+	}
+}

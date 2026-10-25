@@ -34,6 +34,20 @@ export interface HealthReport {
   service: string;
   uptimeSeconds: number;
   db: DbHealth;
+  /** ENVIRONMENT_LABEL, e.g. "Test server — mock Claru"; empty locally. */
+  environment: string;
+}
+
+/** One row of the admin's Problems page. */
+export interface ProblemView {
+  id: string;
+  at: string;
+  source: 'server' | 'job' | 'browser';
+  message: string;
+  detail: Record<string, unknown>;
+  user: string | null;
+  requestId: string | null;
+  page: string | null;
 }
 
 /** What the API ever reveals about a user. Never includes the password hash. */

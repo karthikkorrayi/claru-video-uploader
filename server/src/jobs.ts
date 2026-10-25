@@ -1,5 +1,6 @@
 import type pg from 'pg';
 import type { Logger } from 'pino';
+import { recordProblem } from './problems.js';
 
 export type JobKind = 'check' | 'split';
 
@@ -69,6 +70,11 @@ async function runOne(
       [job.id, last ? 'failed' : 'queued', message, job.attempts * job.attempts],
     );
     logger.warn({ job: job.id, kind: job.kind, recordingId: job.recording_id, attempt: job.attempts, err: message }, 'job failed');
+    await recordProblem(db, logger, {
+      source: 'job',
+      message: `${job.kind} failed (attempt ${job.attempts} of ${job.max_attempts}${last ? ', giving up' : ', will retry'}): ${message}`,
+      detail: { job: job.id, kind: job.kind, recordingId: job.recording_id },
+    });
     if (last) await onGiveUp(job, message);
   }
 }

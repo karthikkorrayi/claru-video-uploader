@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import type pg from 'pg';
 import { z } from 'zod';
-import type { AuditView } from '@cvu/shared';
+import type { AuditView, ProblemView } from '@cvu/shared';
 import { audit } from '../audit.js';
 import { generateTemporaryPassword, hashPassword } from '../auth/password.js';
 import { revokeUserSessions } from '../auth/sessions.js';
@@ -169,6 +169,37 @@ export function adminRoutes(db: pg.Pool): Router {
       details: e.details,
     }));
     res.json({ entries });
+  });
+
+  /** The newest problems: server errors, failed background jobs, testers' browser errors. */
+  router.get('/problems', async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+    const r = await db.query<{
+      id: string;
+      at: Date;
+      source: ProblemView['source'];
+      message: string;
+      detail: Record<string, unknown>;
+      username: string | null;
+      request_id: string | null;
+      page: string | null;
+    }>(
+      `SELECT p.id, p.at, p.source, p.message, p.detail, u.username, p.request_id, p.page
+         FROM problems p LEFT JOIN users u ON u.id = p.user_id
+        ORDER BY p.id DESC LIMIT $1`,
+      [limit],
+    );
+    const problems: ProblemView[] = r.rows.map((p) => ({
+      id: p.id,
+      at: p.at.toISOString(),
+      source: p.source,
+      message: p.message,
+      detail: p.detail,
+      user: p.username,
+      requestId: p.request_id,
+      page: p.page,
+    }));
+    res.json({ problems });
   });
 
   return router;

@@ -1,0 +1,50 @@
+# After CI passes on main: send that exact commit to the test server.
+# Off until you switch it on (phase D4): repository variable DEPLOY_ENABLED=true,
+# variable DEPLOY_HOST (server IP), secrets DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS.
+# Optional variable DEPLOY_SITE when the site has a real domain instead of <ip>.sslip.io.
+name: Deploy to test server
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-test-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: test-server
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: SSH key (deploy-only) and the server's pinned host key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Deploy
+        run: deploy/push-release.sh "${{ vars.DEPLOY_HOST }}"
+      - name: Check the public site
+        env:
+          HOST: ${{ vars.DEPLOY_HOST }}
+          SITE: ${{ vars.DEPLOY_SITE }}
+        run: |
+          SITE="${SITE:-${HOST//./-}.sslip.io}"
+          curl -fsS --retry 5 --retry-delay 3 "https://$SITE/api/healthz"

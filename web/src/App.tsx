@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { PublicUser } from '@cvu/shared';
+import type { HealthReport, PublicUser } from '@cvu/shared';
 import { api, ApiError } from './api.js';
 import { AuditPage } from './pages/Audit.js';
 import { ChangePasswordPage } from './pages/ChangePassword.js';
 import { DeclarePage } from './pages/Declare.js';
 import { HomePage } from './pages/Home.js';
 import { LoginPage } from './pages/Login.js';
+import { ProblemsPage } from './pages/Problems.js';
 import { RecordingsPage } from './pages/Recordings.js';
 import { UploadPage } from './pages/Upload.js';
 import { UsersPage } from './pages/Users.js';
 
-type Page = 'home' | 'upload' | 'recordings' | 'declare' | 'users' | 'audit' | 'password';
+type Page = 'home' | 'upload' | 'recordings' | 'declare' | 'users' | 'audit' | 'problems' | 'password';
 
 export function App() {
   const [user, setUser] = useState<PublicUser | null | undefined>(undefined);
@@ -34,6 +35,16 @@ export function App() {
 
   useEffect(refresh, [refresh]);
 
+  // "Test server — mock Claru" etc., so nobody mistakes the test site for the real one.
+  const [environment, setEnvironment] = useState('');
+  useEffect(() => {
+    fetch('/api/healthz')
+      .then((r) => r.json() as Promise<HealthReport>)
+      .then((h) => setEnvironment(h.environment ?? ''))
+      .catch(() => undefined);
+  }, []);
+  const banner = environment ? <div className="env-banner">{environment}</div> : null;
+
   async function signOut() {
     await api('POST', '/auth/logout').catch(() => undefined);
     setUser(null);
@@ -41,7 +52,14 @@ export function App() {
   }
 
   if (user === undefined) return <main className="center muted">Loading…</main>;
-  if (user === null) return <LoginPage onSignedIn={(u) => { setUser(u); setPage('home'); }} />;
+  if (user === null) {
+    return (
+      <>
+        {banner}
+        <LoginPage onSignedIn={(u) => { setUser(u); setPage('home'); }} />
+      </>
+    );
+  }
   if (user.mustChangePassword) {
     return <ChangePasswordPage user={user} forced onDone={(u) => setUser(u)} onSignOut={signOut} />;
   }
@@ -52,11 +70,12 @@ export function App() {
     ['recordings', 'Recordings'],
     ['declare', 'Declare'],
   ];
-  if (user.role === 'admin') nav.push(['users', 'Users'], ['audit', 'Audit log']);
+  if (user.role === 'admin') nav.push(['users', 'Users'], ['audit', 'Audit log'], ['problems', 'Problems']);
   nav.push(['password', 'Change password']);
 
   return (
     <>
+      {banner}
       <header className="topbar">
         <strong>Claru Video Uploader</strong>
         <nav>
@@ -83,6 +102,7 @@ export function App() {
         {page === 'declare' && <DeclarePage initialIds={declareIds} onDone={() => setPage('recordings')} />}
         {page === 'users' && user.role === 'admin' && <UsersPage me={user} />}
         {page === 'audit' && user.role === 'admin' && <AuditPage />}
+        {page === 'problems' && user.role === 'admin' && <ProblemsPage />}
         {page === 'password' && <ChangePasswordPage user={user} onDone={(u) => { setUser(u); setPage('home'); }} />}
       </main>
     </>

@@ -45,6 +45,12 @@ Open http://127.0.0.1:5173.
 - Recordings page → Declare: shared fields once, then capture time and the four consents per recording.
 - Clip rules come from `.env` (`CLIP_MIN_SECONDS`, `CLIP_MAX_SECONDS`, `CAPTURE_ASPECT`) and must match Claru's.
 
+## Test server (D1–D5)
+
+`docs/DEPLOY.md`: one DigitalOcean Droplet with HTTPS, mock Claru only. `deploy/` holds the setup and
+release scripts; `.github/workflows/` runs the tests on every push and (once switched on) deploys `main`.
+Admin → Problems lists server errors, failed jobs and testers' browser errors.
+
 ## Rules
 
 - `.env` holds secrets and is never committed. `.env.example` lists every setting.

@@ -1,4 +1,5 @@
 import { audit } from '../audit.js';
+import { pruneProblems } from '../problems.js';
 import type { UploadContext } from './context.js';
 import { completeUpload } from './complete.js';
 import { removeTusFiles } from './storage.js';
@@ -49,6 +50,7 @@ export async function sweepUploads(ctx: Pick<UploadContext, 'db' | 'logger' | 's
     report.abandoned++;
   }
 
+  await pruneProblems(db);
   if (report.completed || report.abandoned) logger.info(report, 'upload sweep');
   return report;
 }

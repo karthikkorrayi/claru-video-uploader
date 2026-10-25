@@ -6,6 +6,7 @@ import '@uppy/core/css/style.min.css';
 import '@uppy/dashboard/css/style.min.css';
 import { fingerprintFromSamples, fingerprintRanges, type PublicUser, type RecordingView } from '@cvu/shared';
 import { api, errorText } from '../api.js';
+import { reportProblem } from '../reporter.js';
 import { size } from './Recordings.js';
 
 type FileMeta = Meta & { recordingId?: string };
@@ -135,6 +136,7 @@ export function UploadPage({ me, onUploaded }: { me: PublicUser; onUploaded: () 
     });
     uppy.on('upload-error', (file, error) => {
       const text = String(error?.message ?? error);
+      reportProblem({ kind: 'upload', message: `${file?.name ?? 'file'}: ${text}`.slice(0, 1000) });
       if (/does not match|cancelled|not found/i.test(text)) {
         setProblems((p) => [...p, { name: file?.name ?? 'file', message: text.replace(/^.*response text: /s, '').split(', request id')[0] ?? text }]);
       }

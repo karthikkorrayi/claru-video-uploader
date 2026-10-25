@@ -40,17 +40,21 @@ const schema = z
     CAPTURE_ASPECT: z.enum(['4_3', '16_9']).default('4_3'),
     FFMPEG_PATH: z.string().min(1).default('ffmpeg'),
     FFPROBE_PATH: z.string().min(1).default('ffprobe'),
+    /** Shown as a banner in the web app, e.g. "Test server — mock Claru". Empty = no banner. */
+    ENVIRONMENT_LABEL: z.string().max(60).default(''),
   })
   .superRefine((c, ctx) => {
     if (c.CLIP_MIN_SECONDS * 2 > c.CLIP_MAX_SECONDS) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['CLIP_MAX_SECONDS'], message: 'must be at least twice CLIP_MIN_SECONDS' });
     }
     const host = new URL(c.CLARU_BASE_URL).hostname;
-    if (host === REAL_CLARU_HOST && c.NODE_ENV !== 'production' && c.ALLOW_REAL_CLARU !== 'yes') {
+    // Real Claru only when explicitly allowed, in EVERY environment (a test server runs
+    // NODE_ENV=production too, so production mode alone must not open the door).
+    if (host === REAL_CLARU_HOST && c.ALLOW_REAL_CLARU !== 'yes') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['CLARU_BASE_URL'],
-        message: 'points at real Claru outside production; set ALLOW_REAL_CLARU=yes only for the controlled test',
+        message: 'points at real Claru; set ALLOW_REAL_CLARU=yes only where real deliveries are intended',
       });
     }
   });

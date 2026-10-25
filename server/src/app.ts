@@ -4,6 +4,9 @@ import type { Logger } from 'pino';
 import { APP_NAME, type HealthReport } from '@cvu/shared';
 import { csrfGuard, loadSession, requireAdmin, requireAuth, requirePasswordChanged } from './auth/middleware.js';
 import { checkDb } from './db.js';
+import { recordProblem } from './problems.js';
+import { requestLog } from './requestLog.js';
+import { clientErrorRoutes } from './routes/clientErrors.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
 import { claruRoutes } from './routes/claru.js';
@@ -24,6 +27,8 @@ export interface AppDeps {
   uploads: UploadSettings;
   /** Claru's project, cached (see claru/project.ts). */
   claruProject: () => Promise<ClaruProjectView>;
+  /** Banner text for the web app (ENVIRONMENT_LABEL). */
+  environment?: string;
 }
 
 export function createApp(deps: AppDeps): express.Express {
@@ -42,6 +47,7 @@ export function createApp(deps: AppDeps): express.Express {
     });
     next();
   });
+  app.use(requestLog(deps.logger));
   app.use(express.json({ limit: '100kb' }));
 
   // Public: health only.
@@ -52,6 +58,7 @@ export function createApp(deps: AppDeps): express.Express {
       service: APP_NAME,
       uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
       db: dbHealth,
+      environment: deps.environment ?? '',
     };
     res.status(dbHealth.ok ? 200 : 503).json(body);
   });
@@ -72,6 +79,7 @@ export function createApp(deps: AppDeps): express.Express {
   const uploadCtx = { db, logger: deps.logger, settings: deps.uploads, claruProject: deps.claruProject };
   app.use('/api/recordings', recordingRoutes(uploadCtx));
   app.use('/api/claru', claruRoutes(uploadCtx));
+  app.use('/api/client-errors', clientErrorRoutes(db, deps.logger));
   app.use(createUploadHandler(uploadCtx)); // handles /api/uploads itself (tus needs the unmodified URL)
 
   app.use('/api', (_req, res) => {
@@ -79,8 +87,16 @@ export function createApp(deps: AppDeps): express.Express {
   });
 
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
-    deps.logger.error({ err, method: req.method, path: req.path }, 'unhandled error');
-    res.status(500).json({ error: 'internal_error' });
+    deps.logger.error({ err, reqId: req.id, method: req.method, path: req.path }, 'unhandled error');
+    void recordProblem(db, deps.logger, {
+      source: 'server',
+      message: (err as Error)?.message ?? String(err),
+      detail: { method: req.method, path: req.path, stack: (err as Error)?.stack?.split('\n').slice(0, 8).join('\n') },
+      userId: req.auth?.user.id,
+      requestId: req.id,
+    });
+    if (res.headersSent) return;
+    res.status(500).json({ error: 'internal_error', requestId: req.id });
   });
 
   return app;
