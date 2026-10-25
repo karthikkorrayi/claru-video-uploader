@@ -146,11 +146,18 @@ install -m 644 "$HERE/journald-claru.conf" /etc/systemd/journald.conf.d/claru.co
 systemctl restart systemd-journald
 systemctl daemon-reload
 systemctl enable claru-mock-claru claru-mock-graph claru-server >/dev/null 2>&1
-install -d -o caddy -g caddy /var/log/caddy
+install -d -m 755 -o caddy -g caddy /var/log/caddy
 sed "s/__HOST__/$SITE_HOST/" "$HERE/Caddyfile.template" > /etc/caddy/Caddyfile
-caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+chmod 644 /etc/caddy/Caddyfile
+# Repair a log file left root-owned by an earlier run, then validate AS the caddy user:
+# validating opens the log file, and doing it as root leaves a file Caddy cannot write
+# (Caddy then refuses the whole config).
+chown -R caddy:caddy /var/log/caddy
+runuser -u caddy -- env HOME=/var/lib/caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
 systemctl enable caddy >/dev/null 2>&1
-systemctl reload-or-restart caddy
+systemctl restart caddy
+sleep 2
+systemctl is-active --quiet caddy || { journalctl -u caddy -n 20 --no-pager; echo "Caddy did not start (see above)." >&2; exit 1; }
 ok "services enabled (they start with the first release); logs kept 14 days / 2 GB; Caddy serving $SITE_HOST"
 
 step "8/9  SSH and local firewall"
