@@ -25,7 +25,11 @@ export function ChangePasswordPage({ user, forced, onDone, onSignOut }: Props) {
     setBusy(true);
     setError('');
     try {
-      const r = await api<{ user: PublicUser }>('POST', '/auth/change-password', { currentPassword: current, newPassword: next });
+      const r = await api<{ user: PublicUser }>(
+        'POST',
+        '/auth/change-password',
+        { currentPassword: current, newPassword: next },
+      );
       onDone(r.user);
     } catch (err) {
       setError(errorText(err));
@@ -35,28 +39,54 @@ export function ChangePasswordPage({ user, forced, onDone, onSignOut }: Props) {
   }
 
   return (
-    <main className={forced ? 'center' : undefined}>
+    <div className={forced ? 'center auth-password' : 'password-panel'}>
       <form className="card narrow" onSubmit={submit}>
-        <h1>{forced ? 'Choose your password' : 'Change password'}</h1>
+        {forced ? <h1>Choose your password</h1> : <h2>Update your password</h2>}
         {forced && (
           <p>
-            Hello {user.displayName}. You signed in with a one-time password. Choose your own password to continue.
+            Hello {user.displayName}. You signed in with a one-time password.
+            Choose your own password to continue.
           </p>
         )}
         <label>
           {forced ? 'One-time password' : 'Current password'}
-          <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" required />
+          <input
+            type="password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
         </label>
         <label>
           New password
-          <input type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" required />
+          <input
+            type="password"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
         </label>
         <label>
           New password again
-          <input type="password" value={repeat} onChange={(e) => setRepeat(e.target.value)} autoComplete="new-password" required />
+          <input
+            type="password"
+            value={repeat}
+            onChange={(e) => setRepeat(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
         </label>
-        <p className="muted small">At least 12 characters, not containing your username. Your other signed-in devices will be signed out.</p>
-        {error && <p className="error" role="alert">{error}</p>}
+        <p className="muted small">
+          At least 12 characters, not containing your username. Your other
+          signed-in devices will be signed out.
+        </p>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
         <div className="row">
           <button className="primary" disabled={busy}>
             {busy ? 'Saving…' : 'Save password'}
@@ -68,6 +98,6 @@ export function ChangePasswordPage({ user, forced, onDone, onSignOut }: Props) {
           )}
         </div>
       </form>
-    </main>
+    </div>
   );
 }

@@ -4,9 +4,15 @@ import Dashboard from '@uppy/dashboard';
 import Tus from '@uppy/tus';
 import '@uppy/core/css/style.min.css';
 import '@uppy/dashboard/css/style.min.css';
-import { fingerprintFromSamples, fingerprintRanges, type PublicUser, type RecordingView } from '@cvu/shared';
+import {
+  fingerprintFromSamples,
+  fingerprintRanges,
+  type PublicUser,
+  type RecordingView,
+} from '@cvu/shared';
 import { api, errorText } from '../api.js';
 import { reportProblem } from '../reporter.js';
+import type { Theme } from '../theme.js';
 import { size } from './Recordings.js';
 
 type FileMeta = Meta & { recordingId?: string };
@@ -20,11 +26,15 @@ interface Problem {
 const CHUNK_BYTES = 50 * 1024 * 1024;
 // Keep retrying for about 10 minutes (Wi-Fi drops, server restarts); after
 // that the file shows a retry button, and coming back online retries anyway.
-const RETRY_DELAYS = [0, 1000, 3000, 5000, 10000, 20000, 30000, 60000, 60000, 60000, 60000, 60000, 60000, 60000, 60000];
+const RETRY_DELAYS = [
+  0, 1000, 3000, 5000, 10000, 20000, 30000, 60000, 60000, 60000, 60000, 60000,
+  60000, 60000, 60000,
+];
 
 async function fingerprintOf(file: Blob): Promise<string> {
   const { head, tail } = fingerprintRanges(file.size);
-  const read = async ([a, b]: [number, number]) => new Uint8Array(await file.slice(a, b).arrayBuffer());
+  const read = async ([a, b]: [number, number]) =>
+    new Uint8Array(await file.slice(a, b).arrayBuffer());
   return fingerprintFromSamples(file.size, await read(head), await read(tail));
 }
 
@@ -34,7 +44,15 @@ async function fingerprintOf(file: Blob): Promise<string> {
  * which is also the upload's address — so the same file added again later, in
  * any browser, continues from where the server says it stopped.
  */
-export function UploadPage({ me, onUploaded }: { me: PublicUser; onUploaded: () => void }) {
+export function UploadPage({
+  me,
+  onUploaded,
+  theme,
+}: {
+  me: PublicUser;
+  onUploaded: () => void;
+  theme: Theme;
+}) {
   const target = useRef<HTMLDivElement>(null);
   const uppyRef = useRef<Uppy<FileMeta, Body> | null>(null);
   const [problems, setProblems] = useState<Problem[]>([]);
@@ -51,12 +69,15 @@ export function UploadPage({ me, onUploaded }: { me: PublicUser; onUploaded: () 
   const loadUnfinished = useCallback(() => {
     api<{ recordings: RecordingView[] }>('GET', '/recordings')
       .then((r) => {
-        const inThisTab = new Set(uppyRef.current?.getFiles().map((f) => f.meta.recordingId) ?? []);
+        const inThisTab = new Set(
+          uppyRef.current?.getFiles().map((f) => f.meta.recordingId) ?? [],
+        );
         setUnfinished(
           r.recordings.filter(
             (x) =>
               x.uploadedBy.id === me.id &&
-              (x.transferStatus === 'waiting' || x.transferStatus === 'receiving') &&
+              (x.transferStatus === 'waiting' ||
+                x.transferStatus === 'receiving') &&
               !inThisTab.has(x.id),
           ),
         );
@@ -95,24 +116,37 @@ export function UploadPage({ me, onUploaded }: { me: PublicUser; onUploaded: () 
     uppy.addPreProcessor(async (fileIDs) => {
       for (const id of fileIDs) {
         const file = uppy.getFile(id) as UppyFile<FileMeta, Body> | undefined;
-        if (!file || file.meta.recordingId || !(file.data instanceof Blob)) continue;
-        uppy.emit('preprocess-progress', file, { mode: 'indeterminate', message: 'Checking file…' });
+        if (!file || file.meta.recordingId || !(file.data instanceof Blob))
+          continue;
+        uppy.emit('preprocess-progress', file, {
+          mode: 'indeterminate',
+          message: 'Checking file…',
+        });
         try {
           const fingerprint = await fingerprintOf(file.data);
-          const r = await api<{ recording: RecordingView; resumed: boolean }>('POST', '/recordings', {
-            filename: file.name,
-            sizeBytes: file.size,
-            fingerprint,
-          });
+          const r = await api<{ recording: RecordingView; resumed: boolean }>(
+            'POST',
+            '/recordings',
+            {
+              filename: file.name,
+              sizeBytes: file.size,
+              fingerprint,
+            },
+          );
           uppy.setFileMeta(id, { recordingId: r.recording.id });
           if (r.resumed && r.recording.transferStatus === 'receiving') {
             // Interrupted earlier (tab closed, page reloaded, other browser): ask the server
             // how much it already has and send only the rest.
-            uppy.setFileState(id, { tus: { uploadUrl: `/api/uploads/${r.recording.id}` } });
+            uppy.setFileState(id, {
+              tus: { uploadUrl: `/api/uploads/${r.recording.id}` },
+            });
           }
           uppy.emit('preprocess-complete', uppy.getFile(id));
         } catch (err) {
-          setProblems((p) => [...p, { name: file.name ?? 'file', message: errorText(err) }]);
+          setProblems((p) => [
+            ...p,
+            { name: file.name ?? 'file', message: errorText(err) },
+          ]);
           uppy.removeFile(id);
         }
       }
@@ -136,16 +170,30 @@ export function UploadPage({ me, onUploaded }: { me: PublicUser; onUploaded: () 
     });
     uppy.on('upload-error', (file, error) => {
       const text = String(error?.message ?? error);
-      reportProblem({ kind: 'upload', message: `${file?.name ?? 'file'}: ${text}`.slice(0, 1000) });
+      reportProblem({
+        kind: 'upload',
+        message: `${file?.name ?? 'file'}: ${text}`.slice(0, 1000),
+      });
       if (/does not match|cancelled|not found/i.test(text)) {
-        setProblems((p) => [...p, { name: file?.name ?? 'file', message: text.replace(/^.*response text: /s, '').split(', request id')[0] ?? text }]);
+        setProblems((p) => [
+          ...p,
+          {
+            name: file?.name ?? 'file',
+            message:
+              text
+                .replace(/^.*response text: /s, '')
+                .split(', request id')[0] ?? text,
+          },
+        ]);
       }
     });
     // Uppy notices the network coming back; resume everything that gave up meanwhile.
     uppy.on('back-online', () => void uppy.retryAll());
 
     const warn = (e: BeforeUnloadEvent) => {
-      const uploading = uppy.getFiles().some((f) => f.progress.uploadStarted && !f.progress.uploadComplete);
+      const uploading = uppy
+        .getFiles()
+        .some((f) => f.progress.uploadStarted && !f.progress.uploadComplete);
       if (uploading) e.preventDefault();
     };
     window.addEventListener('beforeunload', warn);
@@ -160,36 +208,60 @@ export function UploadPage({ me, onUploaded }: { me: PublicUser; onUploaded: () 
     };
   }, [loadUnfinished]);
 
+  useEffect(() => {
+    uppyRef.current
+      ?.getPlugin<Dashboard<FileMeta, Body>>('Dashboard')
+      ?.setOptions({ theme });
+  }, [theme]);
+
   return (
     <>
       <section className="card">
-        <h1>Upload recordings</h1>
+        <h2>Add your footage</h2>
         <p className="small muted">
-          Add one or more MP4 files and press Upload. Each file is checked against the server first, so the same recording is never
-          uploaded twice.
+          Add one or more MP4 files and press Upload. Each file is checked
+          against the server first, so the same recording is never uploaded
+          twice.
         </p>
         <details className="small">
           <summary>If the upload is interrupted</summary>
           <ul>
-            <li>Wi-Fi drops or the server restarts: it keeps retrying on its own and continues where it stopped.</li>
             <li>
-              The tab was closed or reloaded: the browser cannot pick the file up again by itself. Open this page, add the{' '}
-              <strong>same file</strong> and press Upload. Only the missing part is sent.
+              Wi-Fi drops or the server restarts: it keeps retrying on its own
+              and continues where it stopped.
             </li>
-            <li>Nothing arrives for 72 hours: the partial upload is deleted and you start again.</li>
+            <li>
+              The tab was closed or reloaded: the browser cannot pick the file
+              up again by itself. Open this page, add the{' '}
+              <strong>same file</strong> and press Upload. Only the missing part
+              is sent.
+            </li>
+            <li>
+              Nothing arrives for 72 hours: the partial upload is deleted and
+              you start again.
+            </li>
           </ul>
         </details>
-        {busy && <p className="small notice-inline">Uploading — keep this tab open. You can use the other pages meanwhile.</p>}
+        {busy && (
+          <p className="small notice-inline">
+            Uploading — keep this tab open. You can use the other pages
+            meanwhile.
+          </p>
+        )}
       </section>
 
       {unfinished.length > 0 && (
         <section className="card notice" role="status">
           <h2>Unfinished uploads</h2>
-          <p className="small">The server is waiting for the rest of these. Add the same file below and press Upload to continue.</p>
+          <p className="small">
+            The server is waiting for the rest of these. Add the same file below
+            and press Upload to continue.
+          </p>
           <ul className="small">
             {unfinished.map((r) => (
               <li key={r.id}>
-                <strong>{r.originalFilename}</strong> — {size(r.receivedBytes)} of {size(r.sizeBytes)} received (
+                <strong>{r.originalFilename}</strong> — {size(r.receivedBytes)}{' '}
+                of {size(r.sizeBytes)} received (
                 {Math.floor((r.receivedBytes / r.sizeBytes) * 100)}%)
               </li>
             ))}
