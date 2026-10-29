@@ -9,6 +9,7 @@ const paths = {
     'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m20 0v-2a4 4 0 0 0-3-3.87M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8m8 .13a4 4 0 0 1 0 7.75',
   audit: 'M9 5h12M9 12h12M9 19h12M3 5h1M3 12h1M3 19h1',
   problems: 'm12 3 10 18H2ZM12 9v4m0 4v.01',
+  claru: 'M22 2 11 13M22 2l-7 20-4-9-9-4Z',
   password: 'M5 10h14v11H5zm3 0V6a4 4 0 0 1 8 0v4m-4 4v3',
   menu: 'M4 6h16M4 12h16M4 18h16',
   close: 'm6 6 12 12M6 18 18 6',

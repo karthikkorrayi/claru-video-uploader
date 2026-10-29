@@ -1,6 +1,8 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { CheckProblem, CheckStatus } from '@cvu/shared';
+import type { ClaruClient } from './claru/client.js';
+import { queueDeliveryIfReady, runDeliver } from './delivery.js';
 import { enqueue, type JobKind, type JobRow } from './jobs.js';
 import { planClips } from './media/plan.js';
 import { assess, checkFile, probe, readPacketIndex } from './media/probe.js';
@@ -10,6 +12,8 @@ import type { UploadContext } from './uploads/context.js';
 import { originalPath, recordingDir } from './uploads/storage.js';
 
 type Ctx = Pick<UploadContext, 'db' | 'logger' | 'settings'>;
+/** With a Claru client, the "deliver" jobs can run too (phase L4). */
+type FullCtx = Ctx & { claru?: ClaruClient; refreshProject?: () => Promise<unknown> };
 
 export function clipsDir(workDir: string, recordingId: string): string {
   return join(recordingDir(workDir, recordingId), 'clips');
@@ -104,6 +108,8 @@ async function runSplit(ctx: Ctx, job: JobRow): Promise<void> {
     client.release();
   }
   logger.info({ recordingId: rec.id, clips: cut.map((c) => Math.round(c.duration)) }, 'recording split');
+  // Already declared? Then it can go to Claru now.
+  await queueDeliveryIfReady(db, rec.id);
 }
 
 async function failSplit(ctx: Ctx, id: string, reason: string): Promise<void> {
@@ -111,8 +117,15 @@ async function failSplit(ctx: Ctx, id: string, reason: string): Promise<void> {
   ctx.logger.warn({ recordingId: id, reason }, 'split failed');
 }
 
-export function jobHandlers(ctx: Ctx): Record<JobKind, (job: JobRow) => Promise<void>> {
-  return { check: (job) => runCheck(ctx, job), split: (job) => runSplit(ctx, job) };
+export function jobHandlers(ctx: FullCtx): Record<JobKind, (job: JobRow) => Promise<void>> {
+  return {
+    check: (job) => runCheck(ctx, job),
+    split: (job) => runSplit(ctx, job),
+    deliver: (job) => {
+      if (!ctx.claru) throw new Error('no Claru client configured');
+      return runDeliver({ db: ctx.db, logger: ctx.logger, claru: ctx.claru, refreshProject: ctx.refreshProject }, job);
+    },
+  };
 }
 
 /** After the last retry: say why on the recording, so it does not sit at "pending" forever. */
@@ -124,9 +137,10 @@ export function onJobGiveUp(ctx: Ctx) {
         `UPDATE recordings SET check_status = 'failed', check_problems = $2::jsonb, checked_at = now(), updated_at = now() WHERE id = $1`,
         [job.recording_id, JSON.stringify([problem])],
       );
-    } else {
+    } else if (job.kind === 'split') {
       await failSplit(ctx, job.recording_id, `Cutting failed: ${error}`);
     }
+    // 'deliver': the clip's last_error already says why; "Retry delivery" starts again.
   };
 }
 

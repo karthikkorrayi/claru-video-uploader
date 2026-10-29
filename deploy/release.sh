@@ -60,6 +60,10 @@ healthy() {
   return 1
 }
 
+# Service definitions travel with the code: install this release's versions.
+install -m 644 "$DIR"/deploy/systemd/claru-*.service /etc/systemd/system/
+systemctl daemon-reload
+
 log "switching to the new release (previous: ${PREV:-none})"
 switch_to "$DIR"
 # shellcheck disable=SC2086

@@ -2,7 +2,7 @@ import type pg from 'pg';
 import type { Logger } from 'pino';
 import { recordProblem } from './problems.js';
 
-export type JobKind = 'check' | 'split';
+export type JobKind = 'check' | 'split' | 'deliver';
 
 export interface JobRow {
   id: string;
@@ -18,11 +18,11 @@ export type JobHandler = (job: JobRow) => Promise<void>;
  * Queues a job unless one of the same kind is already queued or running for
  * this recording. Safe to call twice.
  */
-export async function enqueue(db: pg.Pool | pg.PoolClient, kind: JobKind, recordingId: string): Promise<void> {
+export async function enqueue(db: pg.Pool | pg.PoolClient, kind: JobKind, recordingId: string, maxAttempts = 3): Promise<void> {
   await db.query(
-    `INSERT INTO jobs (kind, recording_id) VALUES ($1, $2)
+    `INSERT INTO jobs (kind, recording_id, max_attempts) VALUES ($1, $2, $3)
      ON CONFLICT (kind, recording_id) WHERE state IN ('queued', 'running') DO NOTHING`,
-    [kind, recordingId],
+    [kind, recordingId, maxAttempts],
   );
 }
 
@@ -34,12 +34,13 @@ export async function cancelJobs(db: pg.Pool, recordingId: string): Promise<void
 }
 
 /** Takes the oldest due job, marking it running. Several servers could share the table safely (SKIP LOCKED). */
-async function claim(db: pg.Pool): Promise<JobRow | null> {
+async function claim(db: pg.Pool, kinds: JobKind[]): Promise<JobRow | null> {
   const r = await db.query<JobRow>(
     `UPDATE jobs SET state = 'running', started_at = now(), attempts = attempts + 1
-      WHERE id = (SELECT id FROM jobs WHERE state = 'queued' AND run_after <= now()
+      WHERE id = (SELECT id FROM jobs WHERE state = 'queued' AND run_after <= now() AND kind = ANY($1::text[])
                    ORDER BY run_after, id FOR UPDATE SKIP LOCKED LIMIT 1)
       RETURNING id, kind, recording_id, attempts, max_attempts`,
+    [kinds],
   );
   return r.rows[0] ?? null;
 }
@@ -51,13 +52,15 @@ async function claim(db: pg.Pool): Promise<JobRow | null> {
 async function runOne(
   db: pg.Pool,
   logger: Logger,
-  handlers: Record<JobKind, JobHandler>,
+  handlers: Partial<Record<JobKind, JobHandler>>,
   job: JobRow,
   onGiveUp: (job: JobRow, error: string) => Promise<void>,
 ): Promise<void> {
   const started = Date.now();
   try {
-    await handlers[job.kind](job);
+    const handler = handlers[job.kind];
+    if (!handler) throw new Error(`no handler for ${job.kind} jobs`);
+    await handler(job);
     await db.query(`UPDATE jobs SET state = 'done', finished_at = now(), last_error = NULL WHERE id = $1 AND state = 'running'`, [job.id]);
     logger.info({ job: job.id, kind: job.kind, recordingId: job.recording_id, ms: Date.now() - started }, 'job done');
   } catch (err) {
@@ -86,18 +89,22 @@ export interface JobRunner {
 }
 
 /**
- * One worker, one job at a time: checking and cutting a 4 GB file is disk-
- * and CPU-heavy, and doing two at once would only slow both down.
+ * One worker, one job at a time, for the kinds it is given. The server runs two:
+ * media work (checking and cutting a 4 GB file is disk- and CPU-heavy, and two
+ * at once would only slow both down) and delivery to Claru (network-bound, so a
+ * long upload never holds up the checks of a new recording).
  */
 export function createJobRunner(opts: {
   db: pg.Pool;
   logger: Logger;
-  handlers: Record<JobKind, JobHandler>;
+  handlers: Partial<Record<JobKind, JobHandler>>;
+  kinds?: JobKind[];
   onGiveUp: (job: JobRow, error: string) => Promise<void>;
   pollMs?: number;
   autoStart?: boolean;
 }): JobRunner {
   const { db, logger, handlers, onGiveUp } = opts;
+  const kinds = opts.kinds ?? (Object.keys(handlers) as JobKind[]);
   let stopped = false;
   let timer: NodeJS.Timeout | undefined;
 
@@ -105,7 +112,7 @@ export function createJobRunner(opts: {
     let n = 0;
     for (;;) {
       if (stopped && opts.autoStart) break;
-      const job = await claim(db);
+      const job = await claim(db, kinds);
       if (!job) break;
       await runOne(db, logger, handlers, job, onGiveUp);
       n++;
@@ -122,7 +129,7 @@ export function createJobRunner(opts: {
   if (opts.autoStart) {
     // A server stopped mid-job left it 'running': put it back in the queue.
     void db
-      .query(`UPDATE jobs SET state = 'queued', run_after = now() WHERE state = 'running'`)
+      .query(`UPDATE jobs SET state = 'queued', run_after = now() WHERE state = 'running' AND kind = ANY($1::text[])`, [kinds])
       .then((r) => r.rowCount && logger.info({ requeued: r.rowCount }, 'jobs interrupted by the last stop were re-queued'))
       .then(() => tick());
   }

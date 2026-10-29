@@ -3,6 +3,7 @@ import type { HealthReport, PublicUser } from '@cvu/shared';
 import { api, ApiError } from './api.js';
 import { AuditPage } from './pages/Audit.js';
 import { ChangePasswordPage } from './pages/ChangePassword.js';
+import { ClaruPage } from './pages/Claru.js';
 import { DeclarePage } from './pages/Declare.js';
 import { HomePage } from './pages/Home.js';
 import { LoginPage } from './pages/Login.js';
@@ -19,6 +20,7 @@ type Page =
   | 'upload'
   | 'recordings'
   | 'declare'
+  | 'claru'
   | 'users'
   | 'audit'
   | 'problems'
@@ -41,6 +43,10 @@ const PAGE_INFO: Record<Page, { title: string; description: string }> = {
   declare: {
     title: 'Declare recordings',
     description: 'Add capture details and confirm consent before delivery.',
+  },
+  claru: {
+    title: 'Claru',
+    description: 'Deliveries, overdue reviews and every call made to Claru.',
   },
   users: {
     title: 'Users',
@@ -194,6 +200,7 @@ export function App() {
   ];
   if (user.role === 'admin')
     nav.push(
+      ['claru', 'Claru'],
       ['users', 'Users'],
       ['audit', 'Audit log'],
       ['problems', 'Problems'],
@@ -230,7 +237,7 @@ export function App() {
           <button
             key={key}
             aria-label={label}
-            className={`nav-item ${page === key ? 'active' : ''} ${key === 'users' ? 'admin-start' : ''}`}
+            className={`nav-item ${page === key ? 'active' : ''} ${key === 'claru' ? 'admin-start' : ''}`}
             onClick={() => navigate(key)}
             aria-current={page === key ? 'page' : undefined}
             title={label}
@@ -376,6 +383,7 @@ export function App() {
             )}
             {page === 'audit' && user.role === 'admin' && <AuditPage />}
             {page === 'problems' && user.role === 'admin' && <ProblemsPage />}
+            {page === 'claru' && user.role === 'admin' && <ClaruPage />}
             {page === 'password' && (
               <ChangePasswordPage
                 user={user}

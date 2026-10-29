@@ -18,7 +18,10 @@ export type AuditAction =
   | 'upload_cancelled'
   | 'upload_abandoned'
   | 'recording_removed'
-  | 'recording_declared';
+  | 'recording_declared'
+  | 'delivery_retried'
+  | 'clip_resubmitted'
+  | 'review_alert_acknowledged';
 
 export interface AuditEntry {
   actorUserId?: string | null;

@@ -168,6 +168,75 @@ export interface ClipView {
   durationSeconds: number;
   sizeBytes: number;
   externalRef: string;
+  /** Phase L4: the delivery attempt now in force for this clip; null before delivery starts. */
+  submission: SubmissionView | null;
+}
+
+/** 'pending' = not created at Claru yet; the others are Claru's own states. */
+export type DeliveryState = 'pending' | 'draft' | 'processing' | 'in_review' | 'approved' | 'rejected' | 'refused' | 'expired';
+
+export interface SubmissionView {
+  attempt: number;
+  externalRef: string;
+  claruId: string | null;
+  state: DeliveryState;
+  sealedAt: string | null;
+  decidedAt: string | null;
+  warnings: Array<{ code: string; message: string }>;
+  refusal: { code: string; message: string; remedy: string; stage: 'create' | 'seal'; at: string } | null;
+  rejection: { code: string; type: 'machine' | 'human'; reason: string; checks?: string[] } | null;
+  /** The last thing that went wrong while sending (network, Claru down); cleared on success. */
+  lastError: string | null;
+  /** True while a 72-hour review alert is open for it. */
+  overdue: boolean;
+  /** Claru answered 404 for it: not followed any more; "Retry delivery" sends it again (same reference). */
+  lost: boolean;
+  /** Exactly what was sent as Claru's "declared" block. */
+  declared: Record<string, unknown> | null;
+}
+
+/** The admin's view of a delayed Claru review. */
+export interface ReviewAlertView {
+  id: string;
+  externalRef: string;
+  recordingId: string;
+  filename: string;
+  uploader: string;
+  state: DeliveryState;
+  sealedAt: string;
+  /** One decimal: 72.4 */
+  hoursWaiting: number;
+  notifications: number;
+  lastNotifiedAt: string | null;
+  acknowledgedAt: string | null;
+  acknowledgedBy: string | null;
+  resolvedAt: string | null;
+  /** Closed because Claru no longer knows the submission (it needs sending again), not because Claru decided. */
+  lost: boolean;
+}
+
+export interface ClaruCallView {
+  id: string;
+  at: string;
+  method: string;
+  path: string;
+  status: number;
+  code: string | null;
+  ms: number;
+  externalRef: string | null;
+  note: string | null;
+}
+
+export interface ClaruOverview {
+  /** True when CLARU_BASE_URL points at the mock: the test controls are available. */
+  mock: boolean;
+  alertAfterHours: number;
+  remindEveryHours: number;
+  counts: Partial<Record<DeliveryState, number>>;
+  /** Sealed earlier but unknown to Claru now (answered 404): needs "Retry delivery". Not in `counts`. */
+  lost: number;
+  alerts: ReviewAlertView[];
+  calls: ClaruCallView[];
 }
 
 export interface ConsentAnswers {

@@ -6,6 +6,9 @@ import { csrfGuard, loadSession, requireAdmin, requireAuth, requirePasswordChang
 import { checkDb } from './db.js';
 import { recordProblem } from './problems.js';
 import { requestLog } from './requestLog.js';
+import type { ClaruClient } from './claru/client.js';
+import type { ReviewSettings } from './review.js';
+import { claruAdminRoutes } from './routes/claruAdmin.js';
 import { clientErrorRoutes } from './routes/clientErrors.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
@@ -29,6 +32,14 @@ export interface AppDeps {
   claruProject: () => Promise<ClaruProjectView>;
   /** Banner text for the web app (ENVIRONMENT_LABEL). */
   environment?: string;
+  /** Phase L4: delivery to Claru and its review. */
+  delivery?: {
+    claru: ClaruClient;
+    review: ReviewSettings;
+    /** The mock's origin when CLARU_BASE_URL points at it; null for the real Claru. */
+    mockOrigin: string | null;
+    pollNow: () => Promise<void>;
+  };
 }
 
 export function createApp(deps: AppDeps): express.Express {
@@ -73,6 +84,13 @@ export function createApp(deps: AppDeps): express.Express {
 
   // Everything below needs a signed-in user who has replaced any temporary password.
   app.use('/api', requireAuth, requirePasswordChanged);
+  if (deps.delivery) {
+    app.use(
+      '/api/admin/claru',
+      requireAdmin,
+      claruAdminRoutes({ db, review: deps.delivery.review, mockOrigin: deps.delivery.mockOrigin, pollNow: deps.delivery.pollNow }),
+    );
+  }
   app.use('/api/admin', requireAdmin, adminRoutes(db));
 
   // Uploads (L2): declare a recording, then send its bytes with tus.

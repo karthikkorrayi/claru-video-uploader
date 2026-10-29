@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { CONSENT_KEYS, FINGERPRINT_PATTERN, TRANSFER_STATUSES, type ConsentKey, type RecordingView } from '@cvu/shared';
 import { audit } from '../audit.js';
 import { ClaruUnavailableError } from '../claru/project.js';
+import { currentSubmissions, deliveryStarted, queueDeliveryIfReady } from '../delivery.js';
 import { cancelJobs, enqueue } from '../jobs.js';
 import {
   bytesStillExpected,
@@ -196,6 +197,13 @@ export function recordingRoutes(ctx: UploadContext): Router {
         res.status(409).json({ error: 'wrong_state', message: `${row.original_filename} has not finished uploading.` });
         return;
       }
+      if (await deliveryStarted(db, row.id)) {
+        res.status(409).json({
+          error: 'wrong_state',
+          message: `${row.original_filename} is already with Claru, so its declaration can no longer change.`,
+        });
+        return;
+      }
       const at = Date.parse(item.recordedAt);
       if (at > Date.now() + 10 * 60_000 || at < EARLIEST_RECORDING) {
         res.status(400).json({ error: 'invalid_input', message: `${row.original_filename}: the capture time must be a real past date.` });
@@ -255,6 +263,8 @@ export function recordingRoutes(ctx: UploadContext): Router {
         details: { filename: row.original_filename, batchRef, categoryCode: shared.categoryCode, siteId: shared.siteId },
       });
     }
+    // Declared and already checked and cut? Then it goes to Claru now.
+    for (const row of rows) await queueDeliveryIfReady(db, row.id);
     const fresh = await Promise.all(rows.map((r) => findRecordingForUser(db, user, r.id)));
     res.json({ batchRef, recordings: await views(fresh.filter((r): r is RecordingRow => !!r)) });
   });
@@ -267,12 +277,85 @@ export function recordingRoutes(ctx: UploadContext): Router {
       res.status(409).json({ error: 'wrong_state', message: 'Only a received recording that is not being checked right now can be checked again.' });
       return;
     }
+    if (await deliveryStarted(db, row.id)) {
+      res.status(409).json({ error: 'wrong_state', message: 'Its clips are already with Claru; checking again would cut them anew.' });
+      return;
+    }
     await db.query(
       `UPDATE recordings SET check_status = 'pending', split_status = NULL, split_error = NULL, updated_at = now() WHERE id = $1`,
       [row.id],
     );
     await enqueue(db, 'check', row.id);
     res.json({ ok: true });
+  });
+
+  /**
+   * After a REFUSAL (Claru's door said no; nothing was created): send the
+   * refused clips again under the SAME externalRef — after fixing the
+   * declaration, or when the cause was passing (a broken transfer).
+   * Also restarts a delivery that gave up (Claru unreachable for hours).
+   */
+  router.post('/:id/retry-delivery', async (req, res) => {
+    const row = await fromParam(req, res);
+    if (!row) return;
+    const subs = await currentSubmissions(db, row.id);
+    const refused = [...subs.values()].filter((s) => s.state === 'refused' || s.state === 'expired');
+    for (const s of refused) {
+      await db.query(`UPDATE submissions SET state = 'pending', last_error = NULL, updated_at = now() WHERE id = $1`, [s.id]);
+    }
+    // Lost at Claru (it answered 404): create again under the same reference.
+    const lost = await db.query(
+      `UPDATE submissions s SET state = 'pending', claru_id = NULL, lost_at = NULL, seal = NULL, sealed_at = NULL, last_error = NULL, updated_at = now()
+         FROM clips c WHERE c.id = s.clip_id AND c.recording_id = $1 AND s.lost_at IS NOT NULL
+        RETURNING s.external_ref`,
+      [row.id],
+    );
+    refused.push(...lost.rows.map((l) => ({ external_ref: l.external_ref }) as (typeof refused)[number]));
+    const queued = await queueDeliveryIfReady(db, row.id);
+    if (!queued) {
+      res.status(409).json({ error: 'wrong_state', message: 'Nothing to send: every clip is with Claru, or the recording is not ready (checks, clips, declaration).' });
+      return;
+    }
+    await audit(db, {
+      action: 'delivery_retried',
+      actorUserId: req.auth!.user.id,
+      targetType: 'recording',
+      targetId: row.id,
+      ip: req.ip,
+      details: { filename: row.original_filename, refusedClips: refused.map((s) => s.external_ref) },
+    });
+    res.json({ ok: true });
+  });
+
+  /**
+   * After a REJECTION (a clip exists at Claru and is tied to its reference): send
+   * the clip again as a NEW submission under a NEW externalRef (…-r2, -r3).
+   * Rejected clips are invisible to Claru's duplicate check, so the same bytes may go.
+   */
+  router.post('/:id/clips/:seq/resubmit', async (req, res) => {
+    const row = await fromParam(req, res);
+    if (!row) return;
+    const seq = Number(req.params.seq);
+    const clip = await db.query<{ id: string; external_ref: string }>('SELECT id, external_ref FROM clips WHERE recording_id = $1 AND seq = $2', [row.id, seq]);
+    const c = clip.rows[0];
+    const current = c ? (await currentSubmissions(db, row.id)).get(c.id) : undefined;
+    if (!c || !current || current.state !== 'rejected') {
+      res.status(409).json({ error: 'wrong_state', message: 'Only a clip Claru rejected can be sent again as a new submission.' });
+      return;
+    }
+    const attempt = current.attempt + 1;
+    const ref = `${c.external_ref}-r${attempt}`;
+    await db.query(`INSERT INTO submissions (clip_id, attempt, external_ref) VALUES ($1, $2, $3)`, [c.id, attempt, ref]);
+    await queueDeliveryIfReady(db, row.id);
+    await audit(db, {
+      action: 'clip_resubmitted',
+      actorUserId: req.auth!.user.id,
+      targetType: 'recording',
+      targetId: row.id,
+      ip: req.ip,
+      details: { filename: row.original_filename, rejected: current.external_ref, newExternalRef: ref },
+    });
+    res.json({ ok: true, externalRef: ref });
   });
 
   /** Stops an upload in transit and deletes what has arrived so far. Owner or admin. */
@@ -307,6 +390,10 @@ export function recordingRoutes(ctx: UploadContext): Router {
   router.post('/:id/remove', async (req, res) => {
     const row = await fromParam(req, res);
     if (!row) return;
+    if (await deliveryStarted(db, row.id)) {
+      res.status(409).json({ error: 'wrong_state', message: 'Its clips are with Claru; the original is kept for the OneDrive backup.' });
+      return;
+    }
     const r = await db.query(
       `UPDATE recordings SET transfer_status = 'removed', storage_path = NULL, ended_at = now(), updated_at = now()
         WHERE id = $1 AND transfer_status = 'received'`,

@@ -1,8 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { createApp } from './app.js';
+import { recordClaruCalls } from './claru/calls.js';
+import { createClaruClient } from './claru/client.js';
 import { claruProjectSource } from './claru/project.js';
-import { cookieSecure, describeConfig, loadConfig, uploadSettings } from './config.js';
+import { claruMockOrigin, cookieSecure, describeConfig, loadConfig, uploadSettings } from './config.js';
+import { queueReadyDeliveries } from './delivery.js';
+import { startReviewPoller } from './review.js';
 import { createPool } from './db.js';
 import { createLogger } from './logger.js';
 import { createJobRunner } from './jobs.js';
@@ -41,6 +45,17 @@ claru
   })
   .catch((err: unknown) => logger.warn({ err: (err as Error).message }, 'Claru project discovery failed at start-up'));
 
+// Phase L4: one client for every call to Claru (the mock unless ALLOW_REAL_CLARU=yes and the real URL).
+const claruClient = createClaruClient({
+  baseUrl: config.CLARU_BASE_URL,
+  apiKey: config.CLARU_API_KEY,
+  projectId: config.CLARU_PROJECT_ID,
+  contractVersion: config.CLARU_CONTRACT_VERSION,
+  onCall: recordClaruCalls(pool, logger),
+});
+const review = { alertAfterHours: config.REVIEW_ALERT_HOURS, remindEveryHours: config.REVIEW_REMINDER_HOURS };
+const poller = startReviewPoller({ db: pool, logger, claru: claruClient, review }, config.CLARU_POLL_MINUTES * 60_000);
+
 const app = createApp({
   pool,
   logger,
@@ -51,13 +66,18 @@ const app = createApp({
   uploads: settings,
   claruProject: claru.get,
   environment: config.ENVIRONMENT_LABEL,
+  delivery: { claru: claruClient, review, mockOrigin: claruMockOrigin(config), pollNow: poller.pollNow },
 });
 
-const core = { db: pool, logger, settings };
+const core = { db: pool, logger, settings, claru: claruClient, refreshProject: claru.refresh };
 const stopSweeper = startUploadSweeper(core);
 const queued = await queueUncheckedRecordings(core);
 if (queued) logger.info({ queued }, 'queued checks for recordings received before phase L3');
-const runner = createJobRunner({ db: pool, logger, handlers: jobHandlers(core), onGiveUp: onJobGiveUp(core), autoStart: true });
+// Two workers: media (checks, cutting) and delivery to Claru, so a long upload never holds up the checks.
+const runner = createJobRunner({ db: pool, logger, handlers: jobHandlers(core), kinds: ['check', 'split'], onGiveUp: onJobGiveUp(core), autoStart: true });
+const deliverer = createJobRunner({ db: pool, logger, handlers: jobHandlers(core), kinds: ['deliver'], onGiveUp: onJobGiveUp(core), autoStart: true });
+const ready = await queueReadyDeliveries(pool);
+if (ready) logger.info({ ready }, 'queued delivery for recordings that were already declared');
 
 const server = app.listen(config.PORT, config.HOST, () => {
   logger.info({ config: describeConfig(config) }, `server listening on http://${config.HOST}:${config.PORT}`);
@@ -74,6 +94,8 @@ async function shutdown(signal: string): Promise<void> {
   logger.info(`${signal} received, shutting down`);
   stopSweeper();
   await runner.stop();
+  await deliverer.stop();
+  poller.stop();
   server.close();
   await pool.end();
   process.exit(0);

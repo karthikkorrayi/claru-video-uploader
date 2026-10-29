@@ -45,6 +45,14 @@ Open http://127.0.0.1:5173.
 - Recordings page → Declare: shared fields once, then capture time and the four consents per recording.
 - Clip rules come from `.env` (`CLIP_MIN_SECONDS`, `CLIP_MAX_SECONDS`, `CAPTURE_ASPECT`) and must match Claru's.
 
+## Delivery to Claru (L4)
+
+- A recording is sent to Claru automatically once checked, cut and declared; Recordings shows each clip's state.
+- Admin → Claru: clips per state, overdue reviews (72 h, then every 6 h), every call made to Claru, and — with the
+  mock — controls to approve, reject or refuse.
+- Locally and on the test server Claru is the mock (`mocks/src/claru.ts`); its state is kept in
+  `~/claru-dev-data/mock-claru-state.json` locally.
+
 ## Test server (D1–D5)
 
 `docs/DEPLOY.md`: one DigitalOcean Droplet with HTTPS, mock Claru only. `deploy/` holds the setup and

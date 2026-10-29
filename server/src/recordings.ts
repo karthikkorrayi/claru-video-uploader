@@ -5,9 +5,11 @@ import type {
   CheckStatus,
   ClipView,
   ConsentAnswers,
+  DeliveryState,
   MediaSummary,
   RecordingView,
   SplitStatus,
+  SubmissionView,
   TransferStatus,
 } from '@cvu/shared';
 import { CONSENT_KEYS } from '@cvu/shared';
@@ -125,9 +127,15 @@ export async function bytesStillExpected(db: pg.Pool): Promise<number> {
 export async function clipsFor(db: pg.Pool, recordingIds: string[]): Promise<Map<string, ClipView[]>> {
   const out = new Map<string, ClipView[]>();
   if (!recordingIds.length) return out;
-  const r = await db.query<ClipRow>(
-    `SELECT recording_id, seq, start_seconds, duration_seconds, size_bytes, external_ref
-       FROM clips WHERE recording_id = ANY($1::uuid[]) ORDER BY recording_id, seq`,
+  // Each clip with the delivery attempt now in force (highest attempt), if any.
+  const r = await db.query<ClipRow & SubmissionRowDb>(
+    `SELECT c.recording_id, c.seq, c.start_seconds, c.duration_seconds, c.size_bytes, c.external_ref,
+            s.attempt, s.external_ref AS sub_ref, s.claru_id, s.state, s.sealed_at, s.decided_at, s.seal, s.refusal,
+            s.rejection, s.last_error, s.declared, s.lost_at,
+            EXISTS (SELECT 1 FROM review_alerts a WHERE a.submission_id = s.id AND a.resolved_at IS NULL) AS overdue
+       FROM clips c
+       LEFT JOIN LATERAL (SELECT * FROM submissions x WHERE x.clip_id = c.id ORDER BY x.attempt DESC LIMIT 1) s ON true
+      WHERE c.recording_id = ANY($1::uuid[]) ORDER BY c.recording_id, c.seq`,
     [recordingIds],
   );
   for (const c of r.rows) {
@@ -138,10 +146,45 @@ export async function clipsFor(db: pg.Pool, recordingIds: string[]): Promise<Map
       durationSeconds: Number(c.duration_seconds),
       sizeBytes: Number(c.size_bytes),
       externalRef: c.external_ref,
+      submission: c.state ? toSubmissionView(c) : null,
     });
     out.set(c.recording_id, list);
   }
   return out;
+}
+
+interface SubmissionRowDb {
+  attempt: number | null;
+  sub_ref: string | null;
+  claru_id: string | null;
+  state: DeliveryState | null;
+  sealed_at: Date | null;
+  decided_at: Date | null;
+  seal: { warnings?: Array<{ code: string; message: string }> } | null;
+  refusal: SubmissionView['refusal'];
+  rejection: SubmissionView['rejection'];
+  last_error: string | null;
+  declared: Record<string, unknown> | null;
+  overdue: boolean | null;
+  lost_at: Date | null;
+}
+
+function toSubmissionView(s: SubmissionRowDb): SubmissionView {
+  return {
+    attempt: s.attempt ?? 1,
+    externalRef: s.sub_ref ?? '',
+    claruId: s.claru_id,
+    state: s.state ?? 'pending',
+    sealedAt: s.sealed_at?.toISOString() ?? null,
+    decidedAt: s.decided_at?.toISOString() ?? null,
+    warnings: s.seal?.warnings ?? [],
+    refusal: s.refusal,
+    rejection: s.rejection,
+    lastError: s.last_error,
+    overdue: !!s.overdue,
+    lost: !!s.lost_at,
+    declared: s.declared,
+  };
 }
 
 export function consentComplete(c: ConsentAnswers | null): boolean {

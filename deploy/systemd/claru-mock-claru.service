@@ -8,6 +8,9 @@ User=claru
 Group=claru
 WorkingDirectory=/opt/claru/current
 EnvironmentFile=/etc/claru/claru.env
+# Submissions survive restarts (every deploy restarts the mock): /var/lib/claru-mock, created by systemd.
+StateDirectory=claru-mock
+Environment=MOCK_CLARU_STATE_FILE=/var/lib/claru-mock/state.json
 ExecStart=/opt/claru/current/node_modules/.bin/tsx mocks/src/claru-server.ts
 Restart=always
 RestartSec=3

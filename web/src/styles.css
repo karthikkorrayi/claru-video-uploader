@@ -1247,3 +1247,57 @@ main.center {
   text-align: left;
   overflow-wrap: anywhere;
 }
+
+/* L4: delivery to Claru — clip rows in Details, test controls, Claru page counts. */
+.details > .wide {
+  grid-column: 1 / -1;
+}
+.clip {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) 2fr;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px dashed var(--line);
+}
+.clip-status {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+}
+.mock-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+}
+.mock-controls button.link {
+  padding: 2px 4px;
+}
+.counts {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 12px 0 4px;
+}
+.count {
+  min-width: 120px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.count .n {
+  font-size: 1.6rem;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+@media (max-width: 700px) {
+  .clip {
+    grid-template-columns: 1fr;
+  }
+}

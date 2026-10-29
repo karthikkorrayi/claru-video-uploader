@@ -69,6 +69,21 @@ release fails its health check, the server switches back to the previous one by 
 - **Problems** page (admin, in the app): server errors, failed background jobs and errors in your
   friend's browser, with the reference they see on screen. Kept 30 days.
 
+## Updating the server to a new phase
+
+Usually `deploy/push-release.sh IP` is all. When a phase changes the server setup itself (L4 does: the mock
+keeps its state, and release.sh now installs service files), run the setup once more after the push — it
+only adds what is missing and never touches your settings or data:
+
+```bash
+deploy/push-release.sh IP
+ssh root@IP 'bash /opt/claru/current/deploy/bootstrap.sh && systemctl restart claru-mock-claru claru-server'
+```
+
+To see the 72-hour alert in minutes on the test server: `sudo nano /etc/claru/claru.env`, add
+`REVIEW_ALERT_HOURS=0.1` and `REVIEW_REMINDER_HOURS=0.05`, then `sudo systemctl restart claru-server`.
+Remove them afterwards.
+
 ## Logs
 
 ```bash

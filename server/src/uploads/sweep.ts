@@ -1,4 +1,5 @@
 import { audit } from '../audit.js';
+import { pruneClaruCalls } from '../claru/calls.js';
 import { pruneProblems } from '../problems.js';
 import type { UploadContext } from './context.js';
 import { completeUpload } from './complete.js';
@@ -51,6 +52,7 @@ export async function sweepUploads(ctx: Pick<UploadContext, 'db' | 'logger' | 's
   }
 
   await pruneProblems(db);
+  await pruneClaruCalls(db);
   if (report.completed || report.abandoned) logger.info(report, 'upload sweep');
   return report;
 }

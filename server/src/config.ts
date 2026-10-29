@@ -40,6 +40,11 @@ const schema = z
     CAPTURE_ASPECT: z.enum(['4_3', '16_9']).default('4_3'),
     FFMPEG_PATH: z.string().min(1).default('ffmpeg'),
     FFPROBE_PATH: z.string().min(1).default('ffprobe'),
+    /** Claru review: alert this long after sealing, then remind every REVIEW_REMINDER_HOURS (decided: 72 / 6). */
+    REVIEW_ALERT_HOURS: z.coerce.number().positive().default(72),
+    REVIEW_REMINDER_HOURS: z.coerce.number().positive().default(6),
+    /** How often to ask Claru for verdicts ("every few minutes, not every few seconds"). */
+    CLARU_POLL_MINUTES: z.coerce.number().min(0.25).max(60).default(3),
     /** Shown as a banner in the web app, e.g. "Test server — mock Claru". Empty = no banner. */
     ENVIRONMENT_LABEL: z.string().max(60).default(''),
   })
@@ -78,6 +83,12 @@ export function uploadSettings(c: Config): UploadSettings {
     tools: { ffmpeg: c.FFMPEG_PATH, ffprobe: c.FFPROBE_PATH },
     clipRules: { minSeconds: c.CLIP_MIN_SECONDS, maxSeconds: c.CLIP_MAX_SECONDS, aspect: c.CAPTURE_ASPECT },
   };
+}
+
+/** The mock Claru runs on this machine; the real one never does. Test controls are offered only then. */
+export function claruMockOrigin(c: Config): string | null {
+  const u = new URL(c.CLARU_BASE_URL);
+  return ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(u.hostname) ? u.origin : null;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {

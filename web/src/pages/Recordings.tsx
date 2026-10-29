@@ -2,6 +2,8 @@ import { EmptyState, LoadingState } from '../components/UI.js';
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import {
   CONSENT_KEYS,
+  type ClipView,
+  type DeliveryState,
   type PublicUser,
   type RecordingView,
   type TransferStatus,
@@ -16,6 +18,18 @@ const LABELS: Record<TransferStatus, string> = {
   cancelled: 'Cancelled',
   removed: 'Removed',
   failed: 'Failed',
+};
+
+/** Claru's states, as the consultant reads them. */
+export const DELIVERY: Record<DeliveryState, { text: string; cls: string }> = {
+  pending: { text: 'Waiting to send', cls: 'muted' },
+  draft: { text: 'Sending…', cls: 'muted' },
+  processing: { text: 'Accepted, processing', cls: '' },
+  in_review: { text: 'In review at Claru', cls: '' },
+  approved: { text: 'Approved', cls: 'ok' },
+  rejected: { text: 'Rejected', cls: 'error' },
+  refused: { text: 'Refused', cls: 'error' },
+  expired: { text: 'Expired (not sealed in 14 days)', cls: 'error' },
 };
 
 /** In transit on the server, but no bytes for 90 s: no browser is sending it (tab closed, page reloaded, network down). */
@@ -83,13 +97,49 @@ function clipsLabel(r: RecordingView): { text: string; cls: string } {
   return { text: '—', cls: 'muted' };
 }
 
+/** One line for the Claru column: the worst state among the clips, with a count. */
+function claruSummary(
+  r: RecordingView,
+): { text: string; cls: string; overdue: boolean } | null {
+  const subs = r.clips
+    .map((c) => c.submission)
+    .filter((s): s is NonNullable<ClipView['submission']> => !!s);
+  if (!subs.length) return null;
+  const order: DeliveryState[] = [
+    'refused',
+    'rejected',
+    'expired',
+    'draft',
+    'pending',
+    'processing',
+    'in_review',
+    'approved',
+  ];
+  const worst = order.find((st) => subs.some((s) => s.state === st))!;
+  const n = subs.filter((s) => s.state === worst).length;
+  const label = DELIVERY[worst];
+  return {
+    text:
+      r.clips.length > 1
+        ? `${label.text} (${n}/${r.clips.length})`
+        : label.text,
+    cls: label.cls,
+    overdue: subs.some((s) => s.overdue),
+  };
+}
+
 const busy = (r: RecordingView) =>
   r.transferStatus === 'receiving' ||
   r.transferStatus === 'waiting' ||
   r.checkStatus === 'pending' ||
   r.checkStatus === 'running' ||
   r.splitStatus === 'pending' ||
-  r.splitStatus === 'running';
+  r.splitStatus === 'running' ||
+  r.clips.some(
+    (c) =>
+      c.submission &&
+      ['pending', 'draft', 'processing'].includes(c.submission.state),
+  );
 
 export function RecordingsPage({
   me,
@@ -118,7 +168,7 @@ export function RecordingsPage({
 
   useEffect(load, [load, refreshKey]);
 
-  // Refresh every 5 s while anything is still arriving, being checked or being cut.
+  // Refresh every 5 s while anything is arriving, being checked or cut, or on its way to Claru.
   const active = rows.some(busy);
   useEffect(() => {
     if (!active) return;
@@ -126,23 +176,30 @@ export function RecordingsPage({
     return () => clearInterval(t);
   }, [active, load]);
 
-  async function act(
-    r: RecordingView,
-    action: 'cancel' | 'remove' | 'recheck',
-  ) {
-    const q = {
-      cancel: `Cancel the upload of ${r.originalFilename}? What has arrived so far is deleted.`,
-      remove: `Delete ${r.originalFilename} and its clips from the server? This cannot be undone.`,
-      recheck: null,
-    }[action];
-    if (q && !window.confirm(q)) return;
+  async function post(path: string, body?: unknown, question?: string) {
+    if (question && !window.confirm(question)) return;
     try {
-      await api('POST', `/recordings/${r.id}/${action}`);
+      await api('POST', path, body);
       load();
     } catch (e) {
       setError(errorText(e));
     }
   }
+
+  const act = (
+    r: RecordingView,
+    action: 'cancel' | 'remove' | 'recheck' | 'retry-delivery',
+  ) =>
+    post(
+      `/recordings/${r.id}/${action}`,
+      undefined,
+      {
+        cancel: `Cancel the upload of ${r.originalFilename}? What has arrived so far is deleted.`,
+        remove: `Delete ${r.originalFilename} and its clips from the server? This cannot be undone.`,
+        recheck: undefined,
+        'retry-delivery': `Send the refused clips of ${r.originalFilename} to Claru again, under the same reference?`,
+      }[action],
+    );
 
   const received = rows.filter((r) => r.averageBytesPerSecond);
   const avg = received.length
@@ -229,7 +286,7 @@ export function RecordingsPage({
                 <th>Transfer</th>
                 <th>Checks</th>
                 <th>Clips</th>
-                <th>Declaration</th>
+                <th>Claru</th>
                 <th />
               </tr>
             </thead>
@@ -238,6 +295,7 @@ export function RecordingsPage({
                 const pct = Math.floor((r.receivedBytes / r.sizeBytes) * 100);
                 const check = checkLabel(r);
                 const clips = clipsLabel(r);
+                const claru = claruSummary(r);
                 const isOpen = open === r.id;
                 return (
                   <Fragment key={r.id}>
@@ -292,10 +350,21 @@ export function RecordingsPage({
                       </td>
                       <td className={clips.cls}>{clips.text}</td>
                       <td>
-                        {r.readyForDelivery ? (
-                          <span className="badge ok">Ready for Claru</span>
+                        {claru ? (
+                          <>
+                            <span className={`badge ${claru.cls}`}>
+                              {claru.text}
+                            </span>
+                            {claru.overdue && (
+                              <div className="small error">Review overdue</div>
+                            )}
+                          </>
+                        ) : r.readyForDelivery ? (
+                          <span className="muted">Waiting to send</span>
                         ) : r.declaration ? (
-                          <span>Declared</span>
+                          <span className="muted">
+                            Declared; waiting for clips
+                          </span>
                         ) : r.transferStatus === 'received' &&
                           r.checkStatus !== 'failed' ? (
                           <button
@@ -333,8 +402,23 @@ export function RecordingsPage({
                         <td colSpan={cols}>
                           <Details
                             r={r}
+                            me={me}
                             onAct={(a) => act(r, a)}
                             onDeclare={() => onDeclare([r.id])}
+                            onResubmit={(seq) =>
+                              post(
+                                `/recordings/${r.id}/clips/${seq}/resubmit`,
+                                undefined,
+                                `Send clip ${seq} to Claru again as a NEW submission? Claru rejected the earlier one, which stays rejected.`,
+                              )
+                            }
+                            onMockReview={(externalRef, decision, extra) =>
+                              post('/admin/claru/mock/review', {
+                                externalRef,
+                                decision,
+                                ...extra,
+                              })
+                            }
                           />
                         </td>
                       </tr>
@@ -355,14 +439,42 @@ export function RecordingsPage({
 
 function Details({
   r,
+  me,
   onAct,
   onDeclare,
+  onResubmit,
+  onMockReview,
 }: {
   r: RecordingView;
-  onAct: (a: 'remove' | 'recheck') => void;
+  me: PublicUser;
+  onAct: (a: 'remove' | 'recheck' | 'retry-delivery') => void;
   onDeclare: () => void;
+  onResubmit: (seq: number) => void;
+  onMockReview: (
+    externalRef: string,
+    decision: 'approve' | 'reject',
+    extra?: Record<string, string>,
+  ) => void;
 }) {
   const d = r.declaration;
+  const subs = r.clips.map((c) => c.submission).filter(Boolean);
+  // Once any clip is with Claru the declaration, the clips and the original are frozen.
+  const withClaru = subs.some(
+    (s) =>
+      s &&
+      ['draft', 'processing', 'in_review', 'approved', 'rejected'].includes(
+        s.state,
+      ),
+  );
+  const anyRefused = subs.some(
+    (s) => s && (s.state === 'refused' || s.state === 'expired'),
+  );
+  const stuck = subs.some(
+    (s) =>
+      s &&
+      ((s.lastError && (s.state === 'pending' || s.state === 'draft')) ||
+        s.lost),
+  );
   return (
     <div className="details">
       <div>
@@ -415,29 +527,6 @@ function Details({
       </div>
 
       <div>
-        <h3>Clips</h3>
-        {r.splitError && <p className="small error">{r.splitError}</p>}
-        {r.clips.length > 0 ? (
-          <ol className="small">
-            {r.clips.map((c) => (
-              <li key={c.seq}>
-                from {minutes(c.startSeconds)}, {minutes(c.durationSeconds)},{' '}
-                {size(c.sizeBytes)}{' '}
-                <span className="mono muted">{c.externalRef}</span>
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <p className="small muted">None yet.</p>
-        )}
-        {r.clips.length === 1 && (
-          <p className="small muted">
-            Up to 30 minutes: delivered as one clip, uncut.
-          </p>
-        )}
-      </div>
-
-      <div>
         <h3>Declaration</h3>
         {d ? (
           <dl className="small kv">
@@ -467,25 +556,161 @@ function Details({
         ) : (
           <p className="small muted">Not declared yet.</p>
         )}
-        {r.checkStatus !== 'failed' && (
+        {r.checkStatus !== 'failed' && !withClaru && (
           <button className="link" onClick={onDeclare}>
             {d ? 'Change declaration' : 'Declare'}
           </button>
         )}
+        {withClaru && (
+          <p className="small muted">
+            Sent to Claru: the declaration can no longer change.
+          </p>
+        )}
+      </div>
+
+      <div className="wide">
+        <h3>Clips and Claru</h3>
+        {r.splitError && <p className="small error">{r.splitError}</p>}
+        {r.clips.length === 0 && <p className="small muted">No clips yet.</p>}
+        {r.clips.length === 1 && (
+          <p className="small muted">
+            Up to 30 minutes: delivered as one clip, uncut.
+          </p>
+        )}
+        {r.clips.map((c) => {
+          const s = c.submission;
+          const st = s ? DELIVERY[s.state] : null;
+          return (
+            <div key={c.seq} className="clip">
+              <div>
+                <strong>Clip {c.seq}</strong>{' '}
+                <span className="small">
+                  from {minutes(c.startSeconds)}, {minutes(c.durationSeconds)},{' '}
+                  {size(c.sizeBytes)}
+                </span>
+                <div className="small mono muted">
+                  {s?.externalRef ?? c.externalRef}
+                </div>
+              </div>
+              <div className="small clip-status">
+                {st ? (
+                  <span className={`badge ${st.cls}`}>{st.text}</span>
+                ) : (
+                  <span className="muted">Not sent yet</span>
+                )}
+                {s && s.attempt > 1 && (
+                  <span className="muted">
+                    Attempt {s.attempt} (sent again after a rejection)
+                  </span>
+                )}
+                {s?.overdue && <span className="error"> · review overdue</span>}
+                {s?.sealedAt && (
+                  <div className="muted">
+                    Sealed {new Date(s.sealedAt).toLocaleString()}
+                  </div>
+                )}
+                {s?.warnings.map((w) => (
+                  <div key={w.code} className="muted">
+                    Warning to Claru&apos;s reviewer: {w.code}
+                  </div>
+                ))}
+                {s?.lastError &&
+                  (s.state === 'pending' || s.state === 'draft') && (
+                    <div className="error">
+                      Not sent yet, retrying: {s.lastError}
+                    </div>
+                  )}
+                {s?.lost && <div className="error">{s.lastError}</div>}
+                {s?.refusal && s.state === 'refused' && (
+                  <div className="error">
+                    Refused at {s.refusal.stage} ({s.refusal.code}):{' '}
+                    {s.refusal.remedy || s.refusal.message}
+                  </div>
+                )}
+                {s?.rejection && s.state === 'rejected' && (
+                  <div className="error">
+                    Rejected by{' '}
+                    {s.rejection.type === 'human'
+                      ? 'a reviewer'
+                      : 'an automatic check'}{' '}
+                    ({s.rejection.code}): {s.rejection.reason}
+                  </div>
+                )}
+                {s?.state === 'rejected' && (
+                  <button className="link" onClick={() => onResubmit(c.seq)}>
+                    Send again as a new submission
+                  </button>
+                )}
+                {me.role === 'admin' &&
+                  s &&
+                  (s.state === 'processing' || s.state === 'in_review') && (
+                    <span className="mock-controls">
+                      Mock Claru:{' '}
+                      <button
+                        className="link"
+                        onClick={() => onMockReview(s.externalRef, 'approve')}
+                      >
+                        approve
+                      </button>
+                      <button
+                        className="link"
+                        onClick={() =>
+                          onMockReview(s.externalRef, 'reject', {
+                            type: 'human',
+                            reason:
+                              'The task is not visible for most of the clip. (test)',
+                          })
+                        }
+                      >
+                        reject (reviewer)
+                      </button>
+                      <button
+                        className="link"
+                        onClick={() =>
+                          onMockReview(s.externalRef, 'reject', {
+                            type: 'machine',
+                            code: 'QA_FROZEN',
+                          })
+                        }
+                      >
+                        reject (QA_FROZEN)
+                      </button>
+                    </span>
+                  )}
+              </div>
+            </div>
+          );
+        })}
+        {(anyRefused || stuck) && (
+          <button className="link" onClick={() => onAct('retry-delivery')}>
+            {anyRefused
+              ? 'Retry delivery (same reference)'
+              : 'Retry delivery now'}
+          </button>
+        )}
+        {anyRefused && (
+          <p className="small muted">
+            Refused means Claru created nothing: fix what the code says (or the
+            declaration), then retry under the same reference.
+          </p>
+        )}
       </div>
 
       <div className="row">
-        {(r.checkStatus === 'failed' ||
-          r.splitStatus === 'failed' ||
-          r.checkStatus === 'passed' ||
-          r.checkStatus === 'warned') && (
-          <button className="link" onClick={() => onAct('recheck')}>
-            Check again
+        {!withClaru &&
+          (r.checkStatus === 'failed' ||
+            r.splitStatus === 'failed' ||
+            r.checkStatus === 'passed' ||
+            r.checkStatus === 'warned') && (
+            <button className="link" onClick={() => onAct('recheck')}>
+              Check again
+            </button>
+          )}
+        {!withClaru && (
+          <button className="link danger" onClick={() => onAct('remove')}>
+            Delete recording
           </button>
         )}
-        <button className="link danger" onClick={() => onAct('remove')}>
-          Delete recording
-        </button>
       </div>
     </div>
   );
